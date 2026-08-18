@@ -43,20 +43,22 @@ Telegram y, si lo quieres, el correo. Se guardan cifradas y no hay que repetirlo
 Escribe **`/estado`** en el grupo de Telegram. Si contesta, está funcionando.
 `/revisar` fuerza una pasada en el momento.
 
-### Actualizar
+### Actualizar — **a mano**
 
-El programa se actualiza **solo**: en cada pasada mira el canal de actualizaciones
-y, si hay versión nueva, la descarga y la aplica al siguiente arranque. Para
-activarlo, deja junto al `.exe` un fichero `actualizacion.txt` con la URL del
-`version.json` de la última release:
+Baja el `.zip` de la última release y vuelve a ejecutar `INSTALAR.bat`. La
+configuración y el historial **no se tocan**: viven fuera de la carpeta del
+programa, en `%LOCALAPPDATA%\AvisMonitorOneways`.
 
-```
-https://github.com/<usuario>/<repo>/releases/latest/download/version.json
-```
-
-Si ese fichero no existe, sencillamente no se buscan actualizaciones. También
-puedes actualizar a mano: bajar el `.zip` nuevo y volver a ejecutar `INSTALAR.bat`
-(la configuración y el historial no se tocan, viven fuera de la carpeta).
+> **La auto-actualización está implementada pero hoy NO funciona, porque este
+> repositorio es privado.** `actualizacion.py` descarga con `urllib` sin
+> credenciales, y las URLs de assets de un repo privado responden **404 si no
+> vas autenticado** (comprobado: 404 anónimo, 200 con token). Los equipos
+> instalados no se enterarían de que hay versión nueva.
+>
+> Para activarla habría que hacer el repositorio público, o darle al
+> actualizador un token de solo lectura. Mientras tanto **no pongas un
+> `actualizacion.txt` apuntando a GitHub**: no haría nada. Sin ese fichero, el
+> programa sencillamente no busca actualizaciones, que es lo que queremos ahora.
 
 ---
 
@@ -154,10 +156,14 @@ pyinstaller --onefile --windowed --icon assets/avis.ico ^
 gh release create v2.2.0 AvisMonitorOneways.zip version.json --title "v2.2.0" --notes "..."
 ```
 
-Los equipos con `actualizacion.txt` apuntando a `releases/latest/download/version.json`
-la cogen solos en la siguiente pasada. El manifiesto lleva `sha256` y **si no
-cuadra el paquete se descarta**, así que no publiques el `version.json` antes que
-el `.zip`.
+El `version.json` se publica igualmente para tenerlo listo, pero **hoy no lo
+consume nadie**: con el repositorio en privado la descarga anónima da 404 (ver
+[Actualizar](#actualizar--a-mano)). Avisa por Telegram de que hay versión nueva y
+que toca reinstalar.
+
+Si algún día se activa la auto-actualización: el manifiesto lleva `sha256` y **si
+no cuadra, el paquete se descarta**, así que no publiques el `version.json` antes
+que el binario.
 
 ## Configuración
 
