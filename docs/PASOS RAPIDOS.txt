@@ -1,0 +1,116 @@
+========================================================================
+ AVIS - MONITOR DE ONEWAYS  ·  PASOS EN EL PORTATIL NUEVO   (v2.0.0)
+========================================================================
+NADA DE ESTO PIDE PERMISOS DE ADMINISTRADOR.
+
+
+PASO 1 - COPIAR LA CARPETA ENTERA
+---------------------------------
+Copia esta carpeta completa al portatil nuevo. Da igual donde (Escritorio,
+Descargas...). NO copies solo el .exe: el instalador necesita los ficheros
+que tiene al lado, y el navegador va en ms-playwright.
+
+   Son 429 MB. Por pendrive o por red.
+
+
+PASO 2 - INSTALAR
+-----------------
+Doble clic en:      INSTALAR.bat
+
+Te hara DOS preguntas:
+
+  a) Si detecta otro equipo vigilando -> te avisa. Como todavia vigila el
+     portatil de Marco, es NORMAL que salga. Responde S para instalar.
+
+  b) "Es un equipo dedicado? Quitar la suspension con enchufe?"
+     -> RESPONDE  S            <<<<<<  ESTO ES LO IMPORTANTE
+     Sin esto el equipo se dormira y se perderan las revisiones.
+
+Instala en:   %LOCALAPPDATA%\AvisMonitorOneways
+              (C:\Users\<tu usuario>\AppData\Local\AvisMonitorOneways)
+
+
+PASO 3 - CONFIGURAR (a mano, en el programa)
+--------------------------------------------
+Abre "AVIS Monitor de Oneways" del Escritorio -> boton "Configuracion".
+
+  RENTWAY      usuario y contrasena de Rentway.
+
+  TELEGRAM     Token: pidelo a quien administra el bot (@BotFather lo
+                      reexpide con /token si eres su dueno).
+               Chat : -5140930532      (grupo AVISOS ONEWAYS DAG)
+               El guion inicial ES PARTE del id, no lo quites.
+
+  CORREO       Servidor      smtp.gmail.com
+               Puerto        465              <<< 465, NO 587
+                                              (el 587 lo corta el cortafuegos)
+               Usuario       mcebrian@domingoalonsogroup.com
+               Contrasena    la contrasena de aplicacion de Google
+               Enviar desde  aucc.rentway@domingoalonsogroup.com
+               Destinatarios aucc.rentway@domingoalonsogroup.com,
+                             imartinez@aviscanarias.es
+
+HAY QUE REESCRIBIRLO TODO: las contrasenas van cifradas con Windows (DPAPI),
+atadas a ESE equipo y ESE usuario. Copiar los ficheros de otro PC no sirve.
+
+
+PASO 4 - INICIO DE SESION AUTOMATICO   (IMPRESCINDIBLE)
+-------------------------------------------------------
+La tarea necesita la sesion de Windows ABIERTA. Con la pantalla bloqueada
+funciona perfectamente; lo que la para es cerrar sesion o un corte de luz
+sin que nadie escriba la contrasena.
+
+Configuralo para que arranque solo. Si no puedes, al menos: tras cualquier
+reinicio hay que iniciar sesion a mano o el sistema queda parado EN SILENCIO.
+
+
+PASO 5 - COMPROBAR QUE VA
+-------------------------
+En el grupo de Telegram escribe:     /estado
+Debe contestar con una hora reciente.
+
+Y al dia siguiente, mira el log:
+   %LOCALAPPDATA%\AvisMonitorOneways\avis_oneways.log
+
+  BIEN  -> pasadas en HORAS PARES: 08:00, 10:00, 12:00...
+  MAL   -> solo pasadas de madrugada (03:xx). Significa que el equipo se
+           duerme y no despierta: avisar para revisarlo.
+
+
+PASO 6 - APAGAR EL VIEJO   (cuando el nuevo funcione)
+------------------------------------------------------
+En el portatil de Marco, ejecutar:   desinstalar.bat
+
+O como minimo, quitar estas dos cosas:
+  - Programador de tareas -> borrar "AVIS - Monitor de Oneways (diario)"
+  - Borrar el acceso directo de la carpeta Inicio:
+      %APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\
+        AVIS Monitor - escucha Telegram.lnk
+
+SI NO SE HACE: llegaran los avisos DUPLICADOS y, peor, los comandos de
+Telegram dejaran de funcionar en los dos equipos (Telegram solo entrega los
+comandos a UN proceso; con dos, ninguno los recibe).
+
+
+========================================================================
+ COMANDOS DE TELEGRAM (desde el grupo, cualquiera puede)
+========================================================================
+   /revisar     revisa Rentway ahora mismo (tarda 2-3 min)
+   /revisar 15  igual, mirando 15 dias
+   /estado      ultima revision, proxima, y cuantos oneways hay
+   /lista       los oneways activos ahora
+   /ayuda       recuerda los comandos
+
+
+========================================================================
+ SI ALGO FALLA
+========================================================================
+Todo queda en   %LOCALAPPDATA%\AvisMonitorOneways\avis_oneways.log
+
+  "Executable doesn't exist"       -> falta la carpeta ms-playwright.
+  "Rentway pide iniciar sesion"    -> no hay credenciales guardadas.
+  "la sesion no sirve para informes: vuelvo a entrar"
+                                   -> NO es un fallo: se esta recuperando solo.
+  "ya hay otro equipo vigilando"   -> NO es un fallo: evita duplicar avisos.
+  "la suspension estaba en N min"  -> alguien repuso la politica de energia;
+                                      el programa la ha vuelto a quitar.

@@ -1,0 +1,164 @@
+AVIS — MONITOR DE ONEWAYS          (version 1.5.0)
+Instalacion en otro portatil
+============================================================
+Vigila los ONEWAYS de Rentway: reservas y contratos que se entregan en una
+oficina y se devuelven en OTRA. Cada 2 horas descarga los informes, detecta los
+oneways, los compara con la pasada anterior y avisa por Telegram y/o correo.
+
+
+QUE HAY EN ESTA CARPETA
+-----------------------
+INSTALAR.bat            <-- ESTO ES LO QUE HAY QUE EJECUTAR
+instalar.ps1            lo que hace INSTALAR.bat (puedes abrirlo y leerlo)
+AvisMonitorOneways.exe  el programa
+ms-playwright\          el navegador que necesita (incluido, no descarga nada)
+actualizacion.txt       de donde se baja las versiones nuevas
+desinstalar.bat         para quitarlo limpiamente
+LEEME - INSTALACION.txt esto
+
+
+=======================  PASOS  =======================
+
+1) COPIAR LA CARPETA ENTERA al otro portatil (pendrive, red, OneDrive...).
+   Completa: el .bat necesita los ficheros que tiene al lado.
+
+2) DOBLE CLIC EN INSTALAR.bat
+   NO pide permisos de administrador en ningun momento. Se instala para el
+   usuario que lo ejecuta, en %LOCALAPPDATA%\AvisMonitorOneways, y deja la
+   vigilancia programada CADA 2 HORAS.
+
+3) ABRIR EL PROGRAMA (acceso directo "AVIS Monitor de Oneways" del Escritorio)
+   y pulsar el boton "Configuracion". Ahi hay que rellenar:
+
+   a) ACCESO A RENTWAY  ->  usuario y contrasena.
+      IMPRESCINDIBLE. La sesion del navegador caduca a los pocos dias; sin
+      credenciales guardadas la vigilancia dejaria de descargar EN SILENCIO.
+
+   b) AVISOS POR TELEGRAM  ->  token del bot y chat.
+      Token : pidelo a quien administra el bot. Si eres su dueno, @BotFather
+              te lo vuelve a dar con /token.
+      Chat  : -5140930532        (grupo AVISOS ONEWAYS DAG)
+      El guion inicial ES PARTE del identificador del grupo, no lo quites.
+
+   c) AVISOS POR CORREO (opcional)  ->  servidor, puerto, usuario, contrasena
+      y destinatarios separados por comas.
+      Gmail: smtp.gmail.com PUERTO 465, no el 587: en la red de AVIS el 587
+      empieza en claro y lo corta el cortafuegos. Con verificacion en dos
+      pasos hace falta una "contrasena de aplicacion", la normal NO vale.
+      Microsoft 365: smtp.office365.com puerto 587.
+
+   Los tres botones VALIDAN antes de guardar: prueban la conexion y mandan un
+   mensaje real. Si algo esta mal, te lo dicen en ese momento.
+
+POR QUE HAY QUE ESCRIBIR TODO ESTO OTRA VEZ EN CADA EQUIPO:
+las contrasenas y el token se guardan cifrados con Windows (DPAPI), que ata el
+cifrado a ESE equipo y ESE usuario. Copiar los ficheros de otro ordenador no
+sirve de nada. Es a proposito: si alguien se lleva el portatil o los ficheros,
+no se lleva las contrasenas.
+
+
+=========  MUY IMPORTANTE: SOLO UN EQUIPO DEBE VIGILAR  =========
+
+Puedes instalarlo en los portatiles que quieras, pero la vigilancia automatica
+debe estar activa en UNO SOLO. Si corren dos:
+  - se duplican los avisos,
+  - y cada uno compara contra su propio historico, con lo que los dos ven
+    "cambios" que no lo son.
+
+EL CONTROL DE VERDAD ES ESE: instalar la tarea programada en UN SOLO equipo.
+El instalador ya lo pregunta.
+
+Ademas, el programa deja una senal (motor_activo.json) con el equipo, la IP, el
+usuario y la hora, y la refresca cada minuto. Por defecto esa senal es LOCAL:
+solo evita dos copias en el MISMO ordenador.
+
+PARA QUE EL AVISO FUNCIONE ENTRE VARIOS EQUIPOS hace falta una carpeta que
+todos vean (una unidad de red o una ruta \\servidor\carpeta). Se indica creando
+un fichero llamado  senal.txt  junto al programa, con esa ruta dentro. Ejemplo:
+
+      \\servidor\comun\AvisMonitorOneways
+
+Con eso, al instalar o al abrir en un segundo portatil sale un aviso con el
+equipo y la IP de quien esta vigilando, y el instalador ofrece instalar SIN
+activar la vigilancia. Una senal de mas de 15 minutos se da por abandonada, asi
+que si el equipo que vigilaba se apaga, otro puede tomar el relevo.
+
+PARA MOVER LA VIGILANCIA A OTRO EQUIPO
+  1. En el que vigila ahora: Programador de tareas -> borrar la tarea
+     "AVIS - Monitor de Oneways (diario)".
+  2. Esperar 15 minutos o borrar motor_activo.json.
+  3. Instalar en el nuevo.
+
+
+===========  COMANDOS DESDE TELEGRAM  ===========
+
+Se pueden pedir cosas al bot escribiendo en el grupo:
+
+   /revisar     revisa Rentway AHORA, sin esperar a la proxima pasada.
+                Contesta al momento y manda el resultado al terminar (2-3 min).
+                Se le pueden pedir mas dias:  /revisar 15
+   /estado      ultima revision, si esta revisando ahora, proxima pasada y
+                cuantos oneways activos hay.
+   /lista       los oneways activos ahora mismo, uno por linea.
+   /ayuda       recuerda estos comandos.
+
+COMO FUNCIONA: la tarea programada se despierta cada 2 horas y se cierra, asi
+que entre pasada y pasada no hay nadie leyendo. Por eso el instalador deja
+ademas un proceso a la escucha (acceso directo en la carpeta de Inicio, con el
+parametro --escucha). No abre ninguna ventana y no consume practicamente nada
+mientras no le escriben.
+
+SOLO PUEDE ESCUCHAR UN EQUIPO. Telegram entrega los comandos a un unico
+proceso; si hay dos, ninguno los recibe (error 409, queda anotado en el log).
+El instalador ya lo omite si detecta que vigila otro equipo.
+
+CON EL EQUIPO SUSPENDIDO NO HAY ESCUCHA. El proceso duerme con la maquina: un
+/revisar de madrugada no lo vera nadie hasta que se despierte. Los avisos
+automaticos si se recuperan solos (la tarea despierta el equipo); los comandos
+no, porque nadie puede predecir cuando se escriben.
+
+QUIEN PUEDE MANDAR COMANDOS: solo el chat configurado. El token del bot puede
+acabar en manos de cualquiera, y sin ese filtro un desconocido podria lanzar
+descargas contra Rentway. Para autorizar mas chats (por ejemplo el privado con
+el bot, ademas del grupo) se crea un fichero  chats_autorizados.txt  junto al
+programa, con un identificador por linea.
+
+
+=================  ACTUALIZACIONES  =================
+
+Se configura creando un fichero llamado  actualizacion.txt  junto al programa,
+con UNA linea dentro. Vale cualquiera de estas formas:
+
+   https://.../version.json                 (GitHub Releases, servidor propio)
+   \\servidor\comun\AvisMonitorOneways      (carpeta de red: se busca el
+                                             version.json dentro)
+
+Si ese fichero no existe, el programa simplemente no busca actualizaciones.
+
+Cuando hay version nueva, se la descarga sola y la aplica la siguiente vez que
+se abre. Tambien se puede forzar con el boton "Buscar ahora" de Configuracion.
+
+Antes de instalar nada comprueba la huella SHA256 del fichero descargado: si no
+coincide con la publicada, lo descarta. Y solo acepta https (o rutas de red),
+nunca http.
+
+
+==============  COMPROBAR QUE FUNCIONA  ==============
+
+Sin esperar a la proxima pasada:
+  - abrir el programa y pulsar "Descargar de Rentway y analizar", o
+  - Programador de tareas -> boton derecho sobre la tarea -> Ejecutar.
+
+Y despues mirar
+      %LOCALAPPDATA%\AvisMonitorOneways\avis_oneways.log
+Ahi esta todo con fecha y hora: informes descargados, oneways encontrados,
+cambios y si se enviaron los avisos.
+
+
+==================  SI ALGO FALLA  ==================
+Todo queda en avis_oneways.log. Los casos tipicos:
+  "Executable doesn't exist"        -> falta la carpeta ms-playwright.
+  "Rentway pide iniciar sesion"     -> no hay credenciales guardadas.
+  "NO EJECUTO: ya hay otro equipo vigilando"
+                                    -> correcto, no es un fallo: esta evitando
+                                       duplicar los avisos.

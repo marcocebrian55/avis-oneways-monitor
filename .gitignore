@@ -1,0 +1,37 @@
+# ---- binarios y artefactos de compilacion ----
+*.exe
+build/
+dist/
+*.spec
+__pycache__/
+*.pyc
+ms-playwright/
+
+# ---- credenciales: NADA de esto se sube ----
+# El repositorio NO contiene claves. Quien lo clone pone las suyas, o en el
+# boton "Configuracion" de la app o copiando configuracion.ejemplo.json a
+# configuracion.json (que es justo el fichero que ignoramos aqui).
+#
+# Los .dat tampoco se suben, y ademas no servirian de nada: DPAPI los ata al
+# equipo y al usuario que los creo, en otro portatil no se pueden descifrar.
+configuracion.json
+*.dat
+chats_autorizados.txt
+
+# ---- datos de produccion (reservas reales, matriculas, contactos) ----
+snapshots_oneways/
+*.log
+*.xlsx
+
+# ---- ficheros de estado que genera el programa al correr ----
+escucha_viva.txt
+motor_activo.json
+pasada_en_curso.lock
+ultimo_parte.txt
+ultimo_aviso_fallo.txt
+equipo_dedicado.txt
+actualizacion.txt
+senal.txt
+version.json
+pendiente.exe
+viejo_*.exe

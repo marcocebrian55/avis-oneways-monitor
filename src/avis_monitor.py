@@ -1,0 +1,1708 @@
+# -*- coding: utf-8 -*-
+"""
+AVIS — Monitor de Oneways (Fase 1, visual)
+Lee los 2 Excels de Rentway (Lista de reservas + Abiertos) de una carpeta,
+detecta ONEWAYS (salida != devolución), guarda un snapshot diario y compara
+con el día anterior mostrando los cambios. Interfaz con marca AVIS.
+(La extracción automática de Rentway y los avisos Telegram/email se añaden encima.)
+"""
+import os, sys, re, glob, json, time, datetime, threading, queue
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox
+import openpyxl
+
+VERSION = "2.1.0"
+# URL del manifiesto de actualizaciones. Hoy apunta a la carpeta de OneDrive
+# compartida; el dia que se publique en GitHub Releases solo cambia esta linea
+# (o el fichero 'actualizacion.txt' que se pone al lado del .exe).
+URL_ACTUALIZACIONES = ""
+
+AVIS_ROJO = "#D4002B"
+AVIS_ROJO_OSC = "#A80022"
+GRIS = "#F4F4F4"
+
+
+def resource(rel):
+    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, rel)
+
+
+def app_dir():
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+# ==================== MOTOR (análisis de oneways) ====================
+def _leer_hoja(path, hdr_row=5):
+    wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    sh = wb.active
+    rows = list(sh.iter_rows(values_only=True))
+    hdr = rows[hdr_row - 1]
+    idx = {c: j for j, c in enumerate(hdr) if c}
+    data = [r for r in rows[hdr_row:] if r and r[0] not in (None, "")]
+    return idx, data
+
+
+def _col(idx, r, *nombres):
+    for name in nombres:
+        for k in idx:
+            if k and name.lower() in k.lower():
+                return r[idx[k]]
+    return None
+
+
+def _norm(v):
+    return str(v).strip() if v not in (None, "") else ""
+
+
+def _oficina_id(v):
+    s = _norm(v)
+    return s.split()[0] if s else ""
+
+
+def _fecha(v):
+    if isinstance(v, (datetime.datetime, datetime.date)):
+        return v.strftime("%d/%m/%Y %H:%M")
+    return _norm(v)
+
+
+def _matricula(v):
+    """De 'Special reservation - 1324LXK' o '1324LXK' saca la matrícula."""
+    s = _norm(v)
+    if " - " in s:
+        s = s.split(" - ")[-1].strip()
+    return s
+
+
+def leer_oneways(reservas_path, abiertos_path):
+    ow = {}
+    if reservas_path and os.path.exists(reservas_path):
+        idx, data = _leer_hoja(reservas_path)
+        for r in data:
+            sal_id = _oficina_id(_col(idx, r, "ID de estación de salida", "ID de estacion de salida"))
+            dev_id = _oficina_id(_col(idx, r, "ID de estación de devolucion", "ID de estación de devolución", "ID de estacion de devolucion"))
+            if not (sal_id and dev_id) or sal_id == dev_id:
+                continue
+            num = _norm(_col(idx, r, "N.º Reserva", "Reserva"))
+            estado = _norm(_col(idx, r, "Estado"))
+            elim = _norm(_col(idx, r, "Eliminado"))
+            activo = (elim.lower() != "true") and ("cancel" not in estado.lower())
+            ow["RES-" + num] = {
+                "tipo": "Reserva", "num": num,
+                "matricula": _matricula(_col(idx, r, "Número de matrícula", "Numero de matricula")),
+                "salida": sal_id, "devolucion": dev_id,
+                "fecha_salida": _fecha(_col(idx, r, "Fecha de salida")),
+                "fecha_llegada": _fecha(_col(idx, r, "Fecha llegada", "Fecha de llegada")),
+                "cliente": _norm(_col(idx, r, "Nombre del cliente")),
+                "estado": estado, "activo": activo,
+            }
+    if abiertos_path and os.path.exists(abiertos_path):
+        idx2, data2 = _leer_hoja(abiertos_path)
+        for r in data2:
+            sal_id = _oficina_id(_col(idx2, r, "ID de la oficina"))
+            dev_id = _oficina_id(_col(idx2, r, "Oficina de devolución", "Oficina de devolucion"))
+            if not (sal_id and dev_id) or sal_id == dev_id:
+                continue
+            num = _norm(_col(idx2, r, "N.º Contrato", "Contrato"))
+            ow["CON-" + num] = {
+                "tipo": "Contrato", "num": num,
+                "matricula": _matricula(_col(idx2, r, "Número de matrícula", "Numero de matricula")),
+                "salida": sal_id, "devolucion": dev_id,
+                "fecha_salida": _fecha(_col(idx2, r, "Fecha de salida")),
+                "fecha_llegada": _fecha(_col(idx2, r, "Fecha de regreso", "Fecha de retorno")),
+                "cliente": _norm(_col(idx2, r, "Nombre del cliente")),
+                "estado": "Abierto", "activo": True,
+            }
+    return ow
+
+
+# ---------- datos ampliados (informes de enriquecimiento) ----------
+def leer_detalle(path):
+    """Informe 2119 'Reservas por Oficina de recogida': datos extra por N.º Reserva
+    (vuelo, franquicia, coberturas...). Devuelve {num_reserva: {...}}."""
+    if not path or not os.path.exists(path):
+        return {}
+    idx, data = _leer_hoja(path)
+    out = {}
+    for r in data:
+        num = _norm(_col(idx, r, "N.º Reserva"))
+        if not num:
+            continue
+        out[num] = {
+            "vuelo": _norm(_col(idx, r, "Vuelo salida")),
+            "lugar_entrega": _norm(_col(idx, r, "Lugar de entrega")),
+            "observaciones": _norm(_col(idx, r, "Observaciones")),
+            "extras": _norm(_col(idx, r, "Extras")),
+            "cdw": _norm(_col(idx, r, "CDW")),
+            "tp": _norm(_col(idx, r, "TP")),
+            "pai": _norm(_col(idx, r, "PAI")),
+            "franquicia": _norm(_col(idx, r, "Franquicia")),
+            "conductor_adicional": _norm(_col(idx, r, "Conductor adicional")),
+        }
+    return out
+
+
+def leer_anulados(path):
+    """Informe 2092 'Anulados': {n.º contrato: fecha de salida}. Sirve para saber
+    si un oneway que desaparece fue ANULADO o simplemente terminó."""
+    if not path or not os.path.exists(path):
+        return {}
+    idx, data = _leer_hoja(path)
+    out = {}
+    for r in data:
+        num = _norm(_col(idx, r, "Contrato de alquiler"))
+        if num:
+            out[num] = _fecha(_col(idx, r, "Fecha de salida"))
+    return out
+
+
+def leer_contactos(path_res, path_con):
+    """Informes 2162 / 2163: correo y teléfono de cliente y conductor,
+    indexados por la misma clave que los oneways (RES-<n> / CON-<n>)."""
+    out = {}
+    for path, pref, campo in ((path_res, "RES-", "N.º Reserva"),
+                              (path_con, "CON-", "Contrato de alquiler")):
+        if not path or not os.path.exists(path):
+            continue
+        idx, data = _leer_hoja(path)
+        for r in data:
+            num = _norm(_col(idx, r, campo))
+            if not num:
+                continue
+            out[pref + num] = {
+                "email": _norm(_col(idx, r, "Correo electrónico del cliente")),
+                "telefono": _norm(_col(idx, r, "Teléfono del cliente")),
+                "email_conductor": _norm(_col(idx, r, "Correo electrónico del conductor")),
+                "telefono_conductor": _norm(_col(idx, r, "Teléfono del conductor")),
+            }
+    return out
+
+
+CAMPOS_EXTRA = ["vuelo", "lugar_entrega", "observaciones", "extras", "cdw", "tp",
+                "pai", "franquicia", "conductor_adicional",
+                "email", "telefono", "email_conductor", "telefono_conductor"]
+
+
+def enriquecer(ow, fich):
+    """Añade a cada oneway los datos ampliados y de contacto (si hay ficheros)."""
+    detalle = leer_detalle(fich.get("detalle"))
+    contactos = leer_contactos(fich.get("contacto_res"), fich.get("contacto_con"))
+    for clave, reg in ow.items():
+        for c in CAMPOS_EXTRA:
+            reg.setdefault(c, "")
+        if clave.startswith("RES-"):
+            reg.update(detalle.get(reg["num"], {}))
+        reg.update(contactos.get(clave, {}))
+    return ow
+
+
+# Solo estos campos disparan aviso de CAMBIO. Los de CAMPOS_EXTRA quedan fuera
+# a propósito: son contexto, y cambian solos (p.ej. se rellena el vuelo).
+CAMPOS_VIGILADOS = ["matricula", "salida", "devolucion", "fecha_salida", "fecha_llegada", "estado", "activo"]
+
+
+def comparar(hoy, ayer, anulados=None):
+    anulados = anulados or {}
+    cambios = []
+    for clave, reg in hoy.items():
+        if clave not in ayer:
+            cambios.append({"tipo": "NUEVO", "reg": reg, "difs": [], "motivo": ""})
+        else:
+            difs = [(c, ayer[clave].get(c), reg.get(c)) for c in CAMPOS_VIGILADOS
+                    if str(ayer[clave].get(c)) != str(reg.get(c))]
+            if difs:
+                cambios.append({"tipo": "CAMBIO", "reg": reg, "difs": difs, "motivo": ""})
+    for clave, reg in ayer.items():
+        if clave not in hoy:
+            motivo = ""
+            if clave.startswith("CON-") and reg.get("num") in anulados:
+                motivo = "ANULADO"
+            cambios.append({"tipo": "DESAPARECIDO", "reg": reg, "difs": [], "motivo": motivo})
+    return cambios
+
+
+def registrar(msg):
+    """Traza a fichero: imprescindible en el .exe (sin consola) y para el
+    futuro modo desatendido."""
+    try:
+        with open(os.path.join(app_dir(), "avis_oneways.log"), "a", encoding="utf-8") as f:
+            f.write(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S ") + str(msg) + "\n")
+    except Exception:
+        pass
+
+
+def carpeta_snapshots():
+    d = os.path.join(app_dir(), "snapshots_oneways")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def guardar_snapshot(ow):
+    """Una foto POR PASADA, con hora.
+
+    Antes era una por día y se comparaba contra la del día anterior. Al pasar a
+    revisar cada 2 horas eso no valía: las pasadas del mismo día se pisaban y
+    nunca se veía un cambio intradía.
+    """
+    sello = datetime.datetime.now().strftime("%Y-%m-%d_%H%M")
+    with open(os.path.join(carpeta_snapshots(), f"snapshot_{sello}.json"), "w", encoding="utf-8") as f:
+        json.dump(ow, f, ensure_ascii=False, indent=1)
+    _limpiar_snapshots()
+
+
+def _limpiar_snapshots(maximo=400):
+    """Con 12 pasadas al día conviene no acumular sin fin."""
+    files = sorted(glob.glob(os.path.join(carpeta_snapshots(), "snapshot_*.json")))
+    for f in files[:-maximo]:
+        try:
+            os.remove(f)
+        except Exception:
+            pass
+
+
+def cargar_snapshot_anterior():
+    """La foto de la ÚLTIMA pasada (la que sea). Se llama ANTES de guardar la
+    de ahora, así que la más reciente en disco es siempre la anterior."""
+    files = sorted(glob.glob(os.path.join(carpeta_snapshots(), "snapshot_*.json")))
+    if not files:
+        return None, None
+    with open(files[-1], encoding="utf-8") as f:
+        etiqueta = os.path.basename(files[-1])[9:-5].replace("_", " ")
+        return json.load(f), etiqueta
+
+
+# Nombre con el que Rentway descarga cada informe (ver rentway_export.py)
+PATRONES_EXCEL = {
+    "reservas":     "reservations_list_*.xlsx",              # 2126 (base)
+    "abiertos":     "open_*.xlsx",                           # 2094 (base)
+    "detalle":      "reservations_by_station out_*.xlsx",    # 2119 (ampliado)
+    "anulados":     "deleted_*.xlsx",                        # 2092 (ampliado)
+    "contacto_res": "reservation_information_*.xlsx",        # 2162 (ampliado)
+    "contacto_con": "rental_agreements_information_*.xlsx",  # 2163 (ampliado)
+}
+
+
+def encontrar_excels(carpeta):
+    """Devuelve {clave: ruta_del_mas_reciente_o_None} para los 6 informes."""
+    def ultimo(patron):
+        fs = glob.glob(os.path.join(carpeta, patron))
+        return max(fs, key=os.path.getmtime) if fs else None
+    return {k: ultimo(v) for k, v in PATRONES_EXCEL.items()}
+
+
+# ==================== INTERFAZ (marca AVIS) ====================
+class App:
+    def __init__(self, root):
+        self.root = root
+        root.title("AVIS — Monitor de Oneways")
+        root.geometry("1180x680")
+        root.configure(bg="white")
+        self._estilo()
+
+        # ---- Cabecera con logo AVIS ----
+        header = tk.Frame(root, bg="white")
+        header.pack(fill="x", side="top")
+        try:
+            self.logo = tk.PhotoImage(file=resource(os.path.join("assets", "avis_banner.png"))).subsample(3, 3)
+            tk.Label(header, image=self.logo, bg="white").pack(side="left", padx=16, pady=10)
+        except Exception:
+            tk.Label(header, text="AVIS", bg="white", fg=AVIS_ROJO,
+                     font=("Arial Black", 28, "bold")).pack(side="left", padx=16, pady=10)
+        tk.Label(header, text="Monitor de Oneways", bg="white", fg="#222",
+                 font=("Segoe UI", 18, "bold")).pack(side="left", padx=6)
+        tk.Frame(root, bg=AVIS_ROJO, height=4).pack(fill="x")
+
+        # ---- Barra de acciones (UNA sola: lo de configurar va aparte) ----
+        bar = tk.Frame(root, bg=GRIS)
+        bar.pack(fill="x")
+        interior = tk.Frame(bar, bg=GRIS)
+        interior.pack(fill="x", padx=14, pady=9)
+
+        tk.Label(interior, text="Carpeta de datos", bg=GRIS, fg="#5A5A60",
+                 font=("Segoe UI", 8)).grid(row=0, column=0, sticky="w")
+        self.dir_var = tk.StringVar(value=os.path.join(os.path.expanduser("~"), "Downloads"))
+        tk.Entry(interior, textvariable=self.dir_var, width=44, relief="solid", bd=1,
+                 font=("Segoe UI", 9)).grid(row=1, column=0, sticky="w", ipady=3)
+        ttk.Button(interior, text="Elegir…", command=self.elegir,
+                   width=8).grid(row=1, column=1, padx=(6, 18))
+
+        tk.Label(interior, text="Previsión", bg=GRIS, fg="#5A5A60",
+                 font=("Segoe UI", 8)).grid(row=0, column=2, sticky="w")
+        marco_dias = tk.Frame(interior, bg=GRIS)
+        marco_dias.grid(row=1, column=2, sticky="w")
+        self.dias_var = tk.StringVar(value="7")
+        tk.Spinbox(marco_dias, from_=1, to=60, width=3, textvariable=self.dias_var,
+                   relief="solid", bd=1, font=("Segoe UI", 9)).pack(side="left", ipady=2)
+        tk.Label(marco_dias, text="días", bg=GRIS, fg="#5A5A60",
+                 font=("Segoe UI", 9)).pack(side="left", padx=(4, 0))
+
+        self.ampliado_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(interior, text="Datos ampliados", variable=self.ampliado_var,
+                       bg=GRIS, activebackground=GRIS, font=("Segoe UI", 9),
+                       fg="#3A3A40").grid(row=1, column=3, padx=(18, 0), sticky="w")
+
+        acciones = tk.Frame(interior, bg=GRIS)
+        acciones.grid(row=1, column=4, sticky="e")
+        interior.columnconfigure(4, weight=1)
+        self.btn_bajar = ttk.Button(acciones, text="Descargar de Rentway y analizar",
+                                    style="Avis.TButton", command=self.descargar)
+        self.btn_bajar.pack(side="left")
+        ttk.Button(acciones, text="Analizar ahora", command=self.analizar).pack(side="left", padx=6)
+        ttk.Button(acciones, text="⚙  Configuración",
+                   command=self.abrir_configuracion).pack(side="left")
+
+        # variables de configuracion (los campos viven en el dialogo, no en la
+        # pantalla principal: el token no debe estar a la vista)
+        self.user_var = tk.StringVar()
+        self.pass_var = tk.StringVar()
+        self.info_cred = tk.StringVar(value="")
+        self.tg_token = tk.StringVar()
+        self.tg_chat = tk.StringVar()
+        self.info_tg = tk.StringVar(value="")
+        self.co_serv = tk.StringVar()
+        self.co_puerto = tk.StringVar(value="587")
+        self.co_user = tk.StringVar()
+        self.co_pass = tk.StringVar()
+        self.co_remit = tk.StringVar()
+        self.co_dest = tk.StringVar()
+        self.info_co = tk.StringVar(value="")
+        self.info_act = tk.StringVar(value="")
+
+        self.cola = queue.Queue()
+        self.worker = None
+        self._estado_credenciales()
+        self._estado_telegram()
+        self._estado_correo()
+        self._avisar_si_otra_instancia()
+        root.after(300, self._poll)
+
+        # ---- Cuerpo: oneways (arriba) + cambios (abajo) ----
+        cuerpo = tk.PanedWindow(root, orient="vertical", bg="white", sashwidth=8,
+                                bd=0, sashrelief="flat")
+        cuerpo.pack(fill="both", expand=True, padx=14, pady=(12, 6))
+
+        f1 = tk.Frame(cuerpo, bg="white")
+        cab1 = tk.Frame(f1, bg="white")
+        cab1.pack(fill="x")
+        tk.Label(cab1, text="ONEWAYS ACTIVOS", bg="white", fg=AVIS_ROJO,
+                 font=("Segoe UI", 9, "bold")).pack(side="left")
+        self.lbl_cuenta = tk.Label(cab1, text="", bg="white", fg="#8A8A90",
+                                   font=("Segoe UI", 9))
+        self.lbl_cuenta.pack(side="left", padx=8)
+        tk.Frame(f1, bg="#E3E3E6", height=1).pack(fill="x", pady=(4, 6))
+
+        cols = ("tipo", "num", "matricula", "ruta", "salida_f", "llegada_f", "estado",
+                "cliente", "vuelo", "contacto")
+        marco_tv = tk.Frame(f1, bg="white")
+        marco_tv.pack(fill="both", expand=True)
+        self.tv = ttk.Treeview(marco_tv, columns=cols, show="headings", height=9,
+                               style="Avis.Treeview")
+        scr = ttk.Scrollbar(marco_tv, orient="vertical", command=self.tv.yview)
+        self.tv.configure(yscrollcommand=scr.set)
+        for c, txt, w in [("tipo", "Tipo", 70), ("num", "Nº", 55), ("matricula", "Matrícula", 90),
+                          ("ruta", "Ruta", 110), ("salida_f", "Salida", 125),
+                          ("llegada_f", "Llegada", 125), ("estado", "Estado", 110),
+                          ("cliente", "Cliente", 150), ("vuelo", "Vuelo", 70),
+                          ("contacto", "Teléfono", 115)]:
+            self.tv.heading(c, text=txt)
+            self.tv.column(c, width=w, anchor="w")
+        self.tv.tag_configure("par", background="#FAFAFB")
+        self.tv.pack(side="left", fill="both", expand=True)
+        scr.pack(side="right", fill="y")
+        cuerpo.add(f1)
+
+        f2 = tk.Frame(cuerpo, bg="white")
+        cab2 = tk.Frame(f2, bg="white")
+        cab2.pack(fill="x")
+        tk.Label(cab2, text="CAMBIOS DESDE LA PASADA ANTERIOR", bg="white", fg=AVIS_ROJO,
+                 font=("Segoe UI", 9, "bold")).pack(side="left")
+        tk.Frame(f2, bg="#E3E3E6", height=1).pack(fill="x", pady=(4, 6))
+        self.txt = tk.Text(f2, height=8, wrap="word", font=("Consolas", 9),
+                           relief="flat", bg="#FCFCFD", padx=8, pady=6,
+                           highlightthickness=1, highlightbackground="#E3E3E6")
+        self.txt.pack(fill="both", expand=True)
+        self.txt.tag_configure("NUEVO", foreground="#0a7d00")
+        self.txt.tag_configure("DESAP", foreground="#b00000")
+        self.txt.tag_configure("CAMBIO", foreground="#b06a00")
+        cuerpo.add(f2)
+
+        # ---- Barra de progreso (solo visible mientras trabaja) ----
+        self.marco_prog = tk.Frame(root, bg="white")
+        self.lbl_prog = tk.Label(self.marco_prog, text="", bg="white", fg="#3A3A40",
+                                 font=("Segoe UI", 9), anchor="w")
+        self.lbl_prog.pack(fill="x", padx=14)
+        self.prog = ttk.Progressbar(self.marco_prog, style="Avis.Horizontal.TProgressbar",
+                                    mode="determinate", maximum=100)
+        self.prog.pack(fill="x", padx=14, pady=(2, 8))
+
+        # ---- Barra de estado (abajo, como en cualquier aplicación) ----
+        pie = tk.Frame(root, bg="#F0F0F2")
+        pie.pack(fill="x", side="bottom")
+        tk.Frame(pie, bg="#E3E3E6", height=1).pack(fill="x")
+        self.estado = tk.StringVar(value="Listo.")
+        tk.Label(pie, textvariable=self.estado, bg="#F0F0F2", fg="#3A3A40",
+                 font=("Segoe UI", 9), anchor="w").pack(side="left", padx=14, pady=5)
+        tk.Label(pie, text="v" + VERSION, bg="#F0F0F2", fg="#9A9AA0",
+                 font=("Segoe UI", 8)).pack(side="right", padx=(6, 14))
+        self.lbl_avisos = tk.Label(pie, text="", bg="#F0F0F2", fg="#6A6A70",
+                                   font=("Segoe UI", 9))
+        self.lbl_avisos.pack(side="right")
+
+    def _estilo(self):
+        st = ttk.Style()
+        try:
+            st.theme_use("clam")
+        except Exception:
+            pass
+        st.configure("Avis.TButton", background=AVIS_ROJO, foreground="white",
+                     font=("Segoe UI", 9, "bold"), padding=(14, 6), borderwidth=0)
+        st.map("Avis.TButton", background=[("active", AVIS_ROJO_OSC),
+                                           ("disabled", "#D9A3AE")])
+        st.configure("TButton", font=("Segoe UI", 9), padding=(10, 6))
+        # tabla: mas aire entre filas y cabecera sobria
+        st.configure("Avis.Treeview", rowheight=25, fieldbackground="white",
+                     background="white", borderwidth=0, font=("Segoe UI", 9))
+        st.configure("Avis.Treeview.Heading", font=("Segoe UI", 8, "bold"),
+                     background="#F0F0F2", foreground="#3A3A40",
+                     relief="flat", padding=(6, 5))
+        st.map("Avis.Treeview.Heading", background=[("active", "#E6E6EA")])
+        st.map("Avis.Treeview", background=[("selected", "#FBE3E8")],
+               foreground=[("selected", "#1A1A1A")])
+        st.configure("Avis.Horizontal.TProgressbar", troughcolor="#EDEDF0",
+                     background=AVIS_ROJO, borderwidth=0, thickness=6)
+
+    def elegir(self):
+        d = filedialog.askdirectory(title="Carpeta con los Excels de Rentway")
+        if d:
+            self.dir_var.set(d)
+
+    # ---------- diálogo de configuración ----------
+    def abrir_configuracion(self):
+        """Credenciales y Telegram viven aquí, no en la pantalla principal:
+        así no está el token a la vista de quien pase por delante."""
+        d = tk.Toplevel(self.root)
+        d.title("Configuración")
+        d.configure(bg="white")
+        d.resizable(False, False)
+        d.transient(self.root)
+        d.grab_set()
+        try:
+            d.iconbitmap(resource(os.path.join("assets", "avis.ico")))
+        except Exception:
+            pass
+
+        tk.Frame(d, bg=AVIS_ROJO, height=4).pack(fill="x")
+
+        def seccion(titulo, ayuda):
+            tk.Label(d, text=titulo, bg="white", fg=AVIS_ROJO,
+                     font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=18, pady=(16, 0))
+            tk.Label(d, text=ayuda, bg="white", fg="#6A6A70", font=("Segoe UI", 8),
+                     justify="left", wraplength=430).pack(anchor="w", padx=18, pady=(2, 8))
+            m = tk.Frame(d, bg="white")
+            m.pack(fill="x", padx=18)
+            return m
+
+        m1 = seccion("Acceso a Rentway",
+                     "Necesario para que la vigilancia automática funcione sola: la sesión "
+                     "del navegador caduca a los pocos días. Se guarda cifrado con Windows "
+                     "y queda atado a este equipo y a este usuario.")
+        tk.Label(m1, text="Usuario", bg="white", font=("Segoe UI", 9)).grid(row=0, column=0, sticky="w")
+        tk.Entry(m1, textvariable=self.user_var, width=26, relief="solid", bd=1,
+                 font=("Segoe UI", 9)).grid(row=0, column=1, padx=8, ipady=3)
+        tk.Label(m1, text="Contraseña", bg="white", font=("Segoe UI", 9)).grid(row=1, column=0, sticky="w", pady=6)
+        tk.Entry(m1, textvariable=self.pass_var, width=26, show="•", relief="solid", bd=1,
+                 font=("Segoe UI", 9)).grid(row=1, column=1, padx=8, pady=6, ipady=3)
+        ttk.Button(m1, text="Guardar", style="Avis.TButton",
+                   command=self.guardar_credenciales).grid(row=1, column=2, padx=4)
+        tk.Label(m1, textvariable=self.info_cred, bg="white", fg="#6A6A70",
+                 font=("Segoe UI", 8)).grid(row=2, column=0, columnspan=3, sticky="w")
+
+        m2 = seccion("Avisos por Telegram",
+                     "Se avisa SOLO cuando hay cambios, no en cada pasada. El chat de un "
+                     "grupo empieza por guion (por ejemplo -5140930532); no lo quites. "
+                     "Al guardar se envía un mensaje de prueba.")
+        tk.Label(m2, text="Token del bot", bg="white", font=("Segoe UI", 9)).grid(row=0, column=0, sticky="w")
+        tk.Entry(m2, textvariable=self.tg_token, width=26, show="•", relief="solid", bd=1,
+                 font=("Segoe UI", 9)).grid(row=0, column=1, padx=8, ipady=3)
+        tk.Label(m2, text="Chat", bg="white", font=("Segoe UI", 9)).grid(row=1, column=0, sticky="w", pady=6)
+        tk.Entry(m2, textvariable=self.tg_chat, width=26, relief="solid", bd=1,
+                 font=("Segoe UI", 9)).grid(row=1, column=1, padx=8, pady=6, ipady=3)
+        ttk.Button(m2, text="Guardar y probar", style="Avis.TButton",
+                   command=self.guardar_telegram).grid(row=1, column=2, padx=4)
+        tk.Label(m2, textvariable=self.info_tg, bg="white", fg="#6A6A70",
+                 font=("Segoe UI", 8)).grid(row=2, column=0, columnspan=3, sticky="w")
+
+        m3 = seccion("Avisos por correo",
+                     "Se envían junto con los de Telegram, solo cuando hay cambios. "
+                     "Gmail: smtp.gmail.com puerto 587 (con verificación en dos pasos "
+                     "hace falta una «contraseña de aplicación»). Microsoft 365: "
+                     "smtp.office365.com puerto 587.")
+        etiquetas = [("Servidor", self.co_serv, 26, None), ("Puerto", self.co_puerto, 8, None),
+                     ("Usuario", self.co_user, 26, None), ("Contraseña", self.co_pass, 26, "•"),
+                     ("Enviar desde", self.co_remit, 34, None),
+                     ("Destinatarios", self.co_dest, 34, None)]
+        for i, (txt, var, ancho, oculto) in enumerate(etiquetas):
+            tk.Label(m3, text=txt, bg="white", font=("Segoe UI", 9)).grid(row=i, column=0, sticky="w", pady=3)
+            e = tk.Entry(m3, textvariable=var, width=ancho, relief="solid", bd=1,
+                         font=("Segoe UI", 9))
+            if oculto:
+                e.configure(show=oculto)
+            e.grid(row=i, column=1, padx=8, pady=3, ipady=3, sticky="w")
+        tk.Label(m3, text="opcional: buzón compartido", bg="white", fg="#9A9AA0",
+                 font=("Segoe UI", 8)).grid(row=4, column=2, sticky="w")
+        tk.Label(m3, text="separa varios con comas", bg="white", fg="#9A9AA0",
+                 font=("Segoe UI", 8)).grid(row=5, column=2, sticky="w")
+        ttk.Button(m3, text="Guardar y probar", style="Avis.TButton",
+                   command=self.guardar_correo).grid(row=1, column=2, rowspan=2, padx=4)
+        tk.Label(m3, textvariable=self.info_co, bg="white", fg="#6A6A70",
+                 font=("Segoe UI", 8)).grid(row=6, column=0, columnspan=3, sticky="w")
+
+        m4 = seccion("Vigilancia automática", "")
+        tk.Label(m4, text=self._texto_tarea(), bg="white", fg="#3A3A40",
+                 font=("Segoe UI", 9), justify="left").pack(anchor="w")
+
+        m5 = seccion("Versión y actualizaciones",
+                     "El programa comprueba en cada pasada si hay una versión nueva "
+                     "publicada y la deja descargada; se aplica sola al reiniciarlo.")
+        fila = tk.Frame(m5, bg="white")
+        fila.pack(fill="x")
+        tk.Label(fila, text="Versión instalada: %s" % VERSION, bg="white",
+                 font=("Segoe UI", 9, "bold")).pack(side="left")
+        ttk.Button(fila, text="Buscar ahora",
+                   command=self.buscar_actualizacion_gui).pack(side="left", padx=10)
+        self.info_act = tk.StringVar(
+            value=("Canal: %s" % url_actualizaciones()) if url_actualizaciones()
+            else "Sin canal de actualizaciones configurado.")
+        tk.Label(m5, textvariable=self.info_act, bg="white", fg="#6A6A70",
+                 font=("Segoe UI", 8), wraplength=430, justify="left").pack(anchor="w", pady=(4, 0))
+
+        pie = tk.Frame(d, bg="white")
+        pie.pack(fill="x", pady=(18, 14), padx=18)
+        ttk.Button(pie, text="Cerrar", command=d.destroy).pack(side="right")
+        d.update_idletasks()
+        x = self.root.winfo_rootx() + (self.root.winfo_width() - d.winfo_width()) // 2
+        y = self.root.winfo_rooty() + 80
+        d.geometry("+%d+%d" % (max(x, 0), max(y, 0)))
+
+    @staticmethod
+    def _texto_tarea():
+        """Lee del Programador de tareas si la vigilancia está puesta."""
+        try:
+            import subprocess
+            r = subprocess.run(
+                ["schtasks", "/Query", "/TN", "AVIS - Monitor de Oneways (diario)", "/FO", "LIST"],
+                capture_output=True, text=True,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            if r.returncode != 0:
+                return "No está programada en este equipo (solo se analiza a mano)."
+            prox = ""
+            for l in r.stdout.splitlines():
+                if "xima" in l:           # 'Hora próxima ejecución'
+                    prox = l.split(":", 1)[1].strip()
+            return ("Programada cada 2 horas, se ejecuta sola y sin ventanas.\n"
+                    "Próxima pasada: %s" % (prox or "—"))
+        except Exception:
+            return "No he podido consultar el Programador de tareas."
+
+    # ---------- credenciales e instancia única ----------
+    def _estado_credenciales(self):
+        import credenciales
+        u, _ = credenciales.cargar(app_dir())
+        if u:
+            self.user_var.set(u)
+            self.info_cred.set("guardadas y cifradas (entra sola)")
+        else:
+            self.info_cred.set("sin guardar — hará falta entrar a mano")
+
+    def guardar_credenciales(self):
+        import credenciales
+        u, c = self.user_var.get().strip(), self.pass_var.get()
+        if not u or not c:
+            messagebox.showwarning("Credenciales", "Pon usuario y contraseña.")
+            return
+        try:
+            credenciales.guardar(app_dir(), u, c)
+            self.pass_var.set("")
+            self.info_cred.set("guardadas y cifradas (entra sola)")
+            registrar("Credenciales guardadas (cifradas con DPAPI) para el usuario %s" % u)
+            messagebox.showinfo(
+                "Credenciales",
+                "Guardadas y cifradas con DPAPI de Windows.\n\n"
+                "El fichero queda atado a este equipo y a este usuario: si alguien "
+                "se lo lleva a otro ordenador, no sirve de nada.")
+        except Exception as e:
+            messagebox.showerror("Credenciales", "No pude guardarlas: %s" % e)
+
+    def guardar_telegram(self):
+        import credenciales, avisos
+        tok, chat = self.tg_token.get().strip(), self.tg_chat.get().strip()
+        if not tok or not chat:
+            messagebox.showwarning("Telegram", "Pon el token del bot y el chat.")
+            return
+        try:
+            nombre = avisos.comprobar(tok)
+        except Exception as e:
+            messagebox.showerror("Telegram", "El token no vale: %s" % str(e)[:150])
+            return
+        if not avisos.enviar(tok, chat, "<b>AVIS · Monitor de Oneways</b>\n"
+                                        "Avisos configurados correctamente en este equipo."):
+            messagebox.showerror("Telegram",
+                                 "El token es válido (%s) pero no pude escribir en ese chat.\n\n"
+                                 "Si es un grupo, añade el bot al grupo y escribe algo primero." % nombre)
+            return
+        credenciales.guardar_telegram(app_dir(), tok, chat)
+        self.tg_token.set("")
+        self.info_tg.set("guardado (%s) — te acabo de mandar un mensaje" % nombre)
+        registrar("Telegram configurado: bot %s, chat %s" % (nombre, chat))
+        messagebox.showinfo("Telegram",
+                            "Listo. Bot %s.\n\nTe he mandado un mensaje de prueba a ese chat.\n"
+                            "El token se guarda cifrado, igual que la contraseña." % nombre)
+
+    def _estado_telegram(self):
+        import credenciales
+        tok, chat = credenciales.cargar_telegram(app_dir())
+        if tok and chat:
+            self.tg_chat.set(chat)
+            self.info_tg.set("configurado (avisa solo si hay cambios)")
+        else:
+            self.info_tg.set("sin configurar — no se enviarán avisos")
+
+    def guardar_correo(self):
+        import credenciales, correo
+        serv, puerto = self.co_serv.get().strip(), self.co_puerto.get().strip()
+        usu, cla = self.co_user.get().strip(), self.co_pass.get()
+        dest = self.co_dest.get().strip()
+        remit = self.co_remit.get().strip()
+        if not serv or not puerto or not dest:
+            messagebox.showwarning("Correo", "Faltan servidor, puerto o destinatarios.")
+            return
+        try:
+            correo.comprobar(serv, puerto, usu, cla)
+        except Exception as e:
+            messagebox.showerror("Correo", "No pude conectar con el servidor:\n\n%s" % str(e)[:250])
+            return
+        if not correo.enviar(serv, puerto, usu, cla, dest,
+                             "AVIS · Monitor de Oneways — prueba",
+                             "<p>Configuración de correo correcta.</p>"
+                             "<p>A partir de ahora recibirás aquí los cambios en los oneways.</p>",
+                             remitente=remit or None):
+            messagebox.showerror("Correo", "Conecté con el servidor pero no pude enviar.")
+            return
+        credenciales.guardar_correo(app_dir(), serv, puerto, usu, cla, dest, remit)
+        self.co_pass.set("")
+        self.info_co.set("configurado — te acabo de mandar un correo de prueba")
+        registrar("Correo configurado: %s:%s (desde %s) -> %s"
+                  % (serv, puerto, remit or usu, dest))
+        messagebox.showinfo("Correo", "Listo. Te he enviado un correo de prueba.\n\n"
+                                      "La contraseña se guarda cifrada.")
+
+    def _estado_correo(self):
+        import credenciales
+        cfg = credenciales.cargar_correo(app_dir())
+        if cfg:
+            self.co_serv.set(cfg.get("servidor", ""))
+            self.co_puerto.set(cfg.get("puerto", "587"))
+            self.co_user.set(cfg.get("usuario", ""))
+            self.co_remit.set(cfg.get("remitente", ""))
+            self.co_dest.set(cfg.get("destinatarios", ""))
+            self.info_co.set("configurado (avisa solo si hay cambios)")
+        else:
+            self.info_co.set("sin configurar — no se enviarán correos")
+
+    def buscar_actualizacion_gui(self):
+        if not url_actualizaciones():
+            messagebox.showinfo(
+                "Actualizaciones",
+                "Todavía no hay canal configurado.\n\n"
+                "Se configura poniendo un fichero 'actualizacion.txt' junto al programa "
+                "con la dirección del manifiesto (version.json).")
+            return
+        try:
+            m, nueva = buscar_actualizacion(descargar=True)
+        except Exception as e:
+            messagebox.showerror("Actualizaciones", str(e)[:250])
+            return
+        if not m:
+            self.info_act.set("No pude consultar el canal de actualizaciones.")
+            return
+        if nueva:
+            self.info_act.set("Descargada la versión %s. Se aplicará al reiniciar."
+                              % m.get("version"))
+            messagebox.showinfo(
+                "Hay una versión nueva",
+                "Versión %s disponible (tienes la %s).\n\n%s\n\n"
+                "Ya está descargada: se instalará sola la próxima vez que abras el programa."
+                % (m.get("version"), VERSION, m.get("notas", "")))
+        else:
+            self.info_act.set("Estás en la última versión (%s)." % VERSION)
+            messagebox.showinfo("Actualizaciones", "Ya tienes la última versión (%s)." % VERSION)
+
+    def _avisar_si_otra_instancia(self):
+        """Si otro portátil ya está vigilando, avisar: dos a la vez duplican los
+        avisos y cada uno compara contra su propio snapshot."""
+        try:
+            import instancia
+            carpeta = instancia.carpeta_por_defecto(app_dir())
+            otra = instancia.otra_instancia(carpeta)
+            if otra:
+                messagebox.showwarning(
+                    "Ya hay otro equipo vigilando",
+                    "El monitor ya está corriendo en:\n\n"
+                    "    Equipo:  %s\n    IP:      %s\n    Usuario: %s\n"
+                    "    Última señal: hace %s minutos\n\n"
+                    "Debe vigilar UN SOLO equipo: si corren dos se duplican los avisos "
+                    "y cada uno compara contra su propio histórico.\n\n"
+                    "Puedes usar esta copia para consultar, pero no dejes la tarea "
+                    "programada activa en los dos."
+                    % (otra.get("equipo"), otra.get("ip"), otra.get("usuario"),
+                       otra.get("edad_min")))
+                registrar("AVISO: otra instancia activa en %s (%s)"
+                          % (otra.get("equipo"), otra.get("ip")))
+        except Exception:
+            pass
+
+    # ---------- descarga automática desde Rentway ----------
+    def descargar(self):
+        if self.worker and self.worker.is_alive():
+            return
+        carpeta = self.dir_var.get().strip()
+        if not carpeta:
+            messagebox.showerror("Sin carpeta", "Indica una carpeta de destino.")
+            return
+        try:
+            dias = max(1, int(self.dias_var.get()))
+        except ValueError:
+            dias = 7
+        self.btn_bajar.configure(state="disabled")
+        self.estado.set("Trabajando…")
+        self.marco_prog.pack(fill="x", before=self.txt.master.master)
+        self.prog.configure(value=0)
+        self.lbl_prog.configure(text="Abriendo Rentway…")
+        self.txt.configure(state="normal")
+        self.txt.delete("1.0", "end")
+        self.txt.insert("end", "Descargando de Rentway…\n")
+        self.txt.configure(state="disabled")
+        self.worker = threading.Thread(target=self._bajar,
+                                       args=(carpeta, dias, self.ampliado_var.get()),
+                                       daemon=True)
+        self.worker.start()
+
+    def _bajar(self, carpeta, dias, ampliado):
+        def anota(m):
+            registrar(m)
+            self.cola.put(("log", str(m)))
+        try:
+            anota("=== Descarga solicitada (dias=%d, ampliado=%s, destino=%s) ==="
+                  % (dias, ampliado, carpeta))
+            import rentway_export, credenciales
+            anota("modulo rentway_export cargado")
+            u, c = credenciales.cargar(app_dir())
+            rentway_export.descargar_informes(
+                carpeta, dias=dias,
+                # el navegador va INVISIBLE tambien aqui: no tiene que molestar
+                # a quien este usando el portatil
+                visible=False,
+                esperar_login=0 if u else 300,
+                log=anota, base_app=app_dir(), ampliado=ampliado,
+                credenciales=(u, c) if u else None,
+                progreso=lambda h, t, txt: self.cola.put(("prog", (h, t, txt))))
+            anota("=== Descarga terminada con exito ===")
+            self.cola.put(("ok", None))
+        except Exception as e:
+            import traceback
+            registrar("ERROR: " + traceback.format_exc())
+            self.cola.put(("error", str(e)))
+
+    def _poll(self):
+        try:
+            while True:
+                tipo, dato = self.cola.get_nowait()
+                if tipo == "log":
+                    self.txt.configure(state="normal")
+                    self.txt.insert("end", dato + "\n")
+                    self.txt.see("end")
+                    self.txt.configure(state="disabled")
+                elif tipo == "prog":
+                    hecho, total, txt = dato
+                    self.prog.configure(value=100.0 * hecho / max(1, total))
+                    self.lbl_prog.configure(text="%s   (%d de %d informes)"
+                                            % (txt, hecho, total))
+                elif tipo == "ok":
+                    self.btn_bajar.configure(state="normal")
+                    self.prog.configure(value=100)
+                    self.lbl_prog.configure(text="Informes descargados. Analizando…")
+                    self.estado.set("Analizando…")
+                    self.analizar()
+                    self.marco_prog.pack_forget()
+                elif tipo == "error":
+                    self.btn_bajar.configure(state="normal")
+                    self.marco_prog.pack_forget()
+                    self.estado.set("Error en la descarga.")
+                    messagebox.showerror("Rentway", "No pude descargar los informes:\n\n" + dato)
+        except queue.Empty:
+            pass
+        self.root.after(300, self._poll)
+
+    def analizar(self):
+        carpeta = self.dir_var.get().strip()
+        fich = encontrar_excels(carpeta)
+        res, abi = fich.get("reservas"), fich.get("abiertos")
+        if not res and not abi:
+            messagebox.showerror("Sin Excels", "No encuentro 'reservations_list_*.xlsx' ni 'open_*.xlsx' en esa carpeta.")
+            return
+        try:
+            ow = leer_oneways(res, abi)
+            enriquecer(ow, fich)
+            anulados = leer_anulados(fich.get("anulados"))
+        except Exception as e:
+            messagebox.showerror("Error", "No pude leer los Excels: " + str(e))
+            return
+        ayer, fecha_ayer = cargar_snapshot_anterior()
+        # mismo cuidado que en el modo desatendido: {} es falso pero SI es
+        # una referencia valida (una pasada sin oneways)
+        cambios = comparar(ow, ayer, anulados) if ayer is not None else []
+        guardar_snapshot(ow)
+
+        # tabla oneways activos
+        self.tv.delete(*self.tv.get_children())
+        activos = [r for r in ow.values() if r["activo"]]
+        for i, r in enumerate(sorted(activos, key=lambda x: x["fecha_salida"])):
+            tel = r.get("telefono") or r.get("telefono_conductor") or ""
+            self.tv.insert("", "end", tags=("par",) if i % 2 else (),
+                           values=(r["tipo"], r["num"], r["matricula"] or "—",
+                                   f"{r['salida']} → {r['devolucion']}", r["fecha_salida"],
+                                   r["fecha_llegada"], r["estado"], r["cliente"],
+                                   r.get("vuelo") or "—", tel or "—"))
+        self.lbl_cuenta.configure(
+            text="%d en los próximos %s días" % (len(activos), self.dias_var.get()))
+
+        # cambios
+        self.txt.configure(state="normal")
+        self.txt.delete("1.0", "end")
+        if not ayer:
+            self.txt.insert("end", "Primer análisis: guardado como referencia. Mañana ya podré comparar.\n")
+        elif not cambios:
+            self.txt.insert("end", f"Sin cambios respecto a {fecha_ayer}.\n")
+        else:
+            self.txt.insert("end", f"Comparando con {fecha_ayer} — {len(cambios)} cambio(s):\n\n")
+            for c in cambios:
+                r = c["reg"]
+                base = f"{r['tipo']} {r['num']} ({r['matricula'] or 's/m'}, {r['salida']}→{r['devolucion']})"
+                if c["tipo"] == "NUEVO":
+                    self.txt.insert("end", f"● NUEVO ONEWAY: {base} salida {r['fecha_salida']} | {r['estado']}\n", "NUEVO")
+                    detalle = self._detalle(r)
+                    if detalle:
+                        self.txt.insert("end", "     " + detalle + "\n")
+                elif c["tipo"] == "DESAPARECIDO":
+                    if c.get("motivo") == "ANULADO":
+                        self.txt.insert("end", f"● ONEWAY ANULADO: {base}\n", "DESAP")
+                    else:
+                        self.txt.insert("end", f"● YA NO ONEWAY: {base} (terminado o fuera de rango)\n", "DESAP")
+                else:
+                    for campo, viejo, nuevo in c["difs"]:
+                        self.txt.insert("end", f"● CAMBIO {base}: {campo}  '{viejo}' → '{nuevo}'\n", "CAMBIO")
+        self.txt.configure(state="disabled")
+
+        avisar_telegram(cambios, activos, fecha_ayer)
+        avisar_correo(cambios, activos, fecha_ayer)
+
+        ampl = [k for k in ("detalle", "anulados", "contacto_res", "contacto_con") if fich.get(k)]
+        self.estado.set("%d oneway(s) · %d cambio(s) · datos ampliados %d/4 · comparado con %s"
+                        % (len(activos), len(cambios), len(ampl), fecha_ayer or "nada previo"))
+        self.lbl_avisos.configure(text=self.info_tg.get())
+
+    @staticmethod
+    def _detalle(r):
+        """Línea de contexto ampliado para un oneway (solo lo que tenga valor)."""
+        partes = []
+        for etiqueta, clave in (("vuelo", "vuelo"), ("entrega en", "lugar_entrega"),
+                                ("franquicia", "franquicia"), ("extras", "extras"),
+                                ("tel.", "telefono"), ("email", "email")):
+            v = (r.get(clave) or "").strip()
+            if v:
+                partes.append(f"{etiqueta} {v}")
+        obs = (r.get("observaciones") or "").strip()
+        if obs:
+            partes.append("obs: " + obs[:70])
+        return " · ".join(partes)
+
+
+def url_actualizaciones(base=None):
+    """De dónde se leen las actualizaciones.
+
+    Se cambia SIN recompilar: basta con un fichero 'actualizacion.txt' al lado
+    del programa. Valores admitidos:
+      - una URL https://…/version.json   (GitHub Releases, servidor propio…)
+      - la palabra 'onedrive'            -> usa la carpeta compartida de OneDrive
+                                            de CADA equipo, que es distinta en
+                                            cada usuario y por eso se resuelve
+                                            aquí y no se escribe a mano.
+    """
+    base = base or app_dir()
+    u = URL_ACTUALIZACIONES
+    f = os.path.join(base, "actualizacion.txt")
+    if os.path.exists(f):
+        try:
+            # utf-8-sig: el Bloc de notas y 'Set-Content -Encoding UTF8' escriben
+            # un BOM invisible al principio que se colaba dentro de la URL
+            with open(f, encoding="utf-8-sig") as h:
+                v = h.read().strip().lstrip("﻿").strip()
+            if v:
+                u = v
+        except Exception:
+            pass
+    if not u:
+        return ""
+    if u.lower().startswith(("http://", "https://", "file:")):
+        return u
+    # cualquier otra cosa se trata como una RUTA (unidad de red, UNC o local)
+    p = u if u.lower().endswith(".json") else os.path.join(u, "version.json")
+    return "file:///" + os.path.abspath(p).replace("\\", "/")
+
+
+def avisar_correo(cambios, activos, referencia, base=None):
+    """Envía el aviso por correo. Solo ONEWAYS NUEVOS y si hay configuración.
+
+    POR QUE SOLO LOS NUEVOS: por Telegram interesa todo (es un canal de trabajo
+    y se lee de un vistazo), pero el correo lo quiere el usuario como aviso de
+    alta: un oneway nuevo es lo unico que obliga a mover un coche. Las
+    modificaciones y las bajas seguirian llegando por Telegram igual.
+    """
+    try:
+        import credenciales, correo
+        base = base or app_dir()
+        cfg = credenciales.cargar_correo(base)
+        nuevos = [c for c in cambios if c.get("tipo") == "NUEVO"]
+        if not cfg or not nuevos:
+            return False
+        asunto = "AVIS · %d oneway(s) NUEVO(s)" % len(nuevos)
+        ok = correo.enviar(cfg["servidor"], cfg["puerto"], cfg["usuario"], cfg["clave"],
+                           cfg["destinatarios"], asunto,
+                           correo.cuerpo_cambios(nuevos, activos, referencia),
+                           remitente=cfg.get("remitente") or None,
+                           log=registrar)
+        registrar("Aviso por correo %s (%d nuevo(s) de %d cambio(s), %d destinatario(s))"
+                  % ("enviado" if ok else "NO enviado", len(nuevos), len(cambios),
+                     len(str(cfg["destinatarios"]).replace(";", ",").split(","))))
+        return ok
+    except Exception as e:
+        registrar("Fallo al avisar por correo: %s" % str(e)[:120])
+        return False
+
+
+def avisar_telegram(cambios, activos, referencia, base=None):
+    """Manda el aviso SOLO si hay cambios. Un fallo aquí nunca tumba la pasada."""
+    try:
+        import credenciales, avisos
+        base = base or app_dir()
+        token, chat = credenciales.cargar_telegram(base)
+        if not token or not chat:
+            return False
+        if not cambios:
+            registrar("Sin cambios: no se envía aviso de Telegram.")
+            return False
+        ok = avisos.enviar(token, chat, avisos.texto_cambios(cambios, activos, referencia),
+                           log=registrar)
+        registrar("Aviso de Telegram %s (%d cambio(s))"
+                  % ("enviado" if ok else "NO enviado", len(cambios)))
+        return ok
+    except Exception as e:
+        registrar("Fallo al avisar por Telegram: %s" % str(e)[:120])
+        return False
+
+
+# ==================== LA PASADA (tarea programada y /revisar) ====================
+def ejecutar_pasada(dias=7, ampliado=True, quien="tarea"):
+    """Descarga, analiza, compara y avisa. Sin ventana.
+
+    Lo comparten la Tarea Programada y el comando /revisar de Telegram, para que
+    los dos hagan EXACTAMENTE lo mismo. Devuelve un dict con el resultado:
+      {"estado": "ok", "cambios": [...], "activos": [...], "referencia": "..."}
+      {"estado": "error", "error": "..."}
+      {"estado": "otro_equipo"|"ocupado", "otra": {...}}
+    """
+    import instancia, credenciales
+    base = app_dir()
+    carpeta_señal = instancia.carpeta_por_defecto(base)
+    registrar("=== PASADA [%s] (dias=%d, ampliado=%s) ===" % (quien, dias, ampliado))
+    registrar("Señal de instancia en: %s" % carpeta_señal)
+
+    otra = instancia.otra_instancia(carpeta_señal)
+    if otra:
+        registrar("NO EJECUTO: ya hay otro equipo vigilando -> %s (IP %s, usuario %s, "
+                  "señal de hace %s min). Se evita duplicar avisos."
+                  % (otra.get("equipo"), otra.get("ip"), otra.get("usuario"),
+                     otra.get("edad_min")))
+        return {"estado": "otro_equipo", "otra": otra}
+
+    # La tarea programada y la escucha son procesos DISTINTOS del mismo equipo,
+    # asi que el control de arriba no los ve como rivales. Sin este candado los
+    # dos abririan Chromium sobre el mismo perfil y se corrompe.
+    bloqueo = instancia.BloqueoLocal(base, quien)
+    bloqueo.__enter__()
+    if not bloqueo.tomado:
+        o = bloqueo.ocupado_por or {}
+        registrar("NO EJECUTO: ya hay una pasada en curso en este equipo "
+                  "(%s, desde hace %s min)." % (o.get("quien"), o.get("edad_min")))
+        return {"estado": "ocupado", "otra": o}
+
+    latido = instancia.Latido(carpeta_señal)
+    latido.start()
+    despierto = MantenerDespierto()
+    despierto.__enter__()
+    try:
+        asegurar_sin_suspension(base)
+        esperar_red()
+        usuario, clave = credenciales.cargar(base)
+        if not usuario:
+            registrar("AVISO: no hay credenciales guardadas. Si la sesion ha caducado "
+                      "esto fallara: abre el programa y guarda usuario y contraseña.")
+        carpeta = os.path.join(os.path.expanduser("~"), "Downloads")
+        import rentway_export
+        rentway_export.descargar_informes(
+            carpeta, dias=dias, visible=False, esperar_login=0,
+            log=registrar, base_app=base, ampliado=ampliado,
+            credenciales=(usuario, clave) if usuario else None)
+
+        fich = encontrar_excels(carpeta)
+        ow = leer_oneways(fich.get("reservas"), fich.get("abiertos"))
+        enriquecer(ow, fich)
+        anulados = leer_anulados(fich.get("anulados"))
+        ayer, fecha_ayer = cargar_snapshot_anterior()
+        # OJO: 'if ayer' era un BUG. Un snapshot sin oneways es {} y en Python
+        # eso es falso, asi que se saltaba la comparacion y el PRIMER oneway
+        # tras un periodo sin ninguno no se avisaba nunca.
+        cambios = comparar(ow, ayer, anulados) if ayer is not None else []
+        guardar_snapshot(ow)
+
+        activos = [r for r in ow.values() if r["activo"]]
+        registrar("Oneways: %d (activos: %d) · Cambios vs %s: %d"
+                  % (len(ow), len(activos), fecha_ayer or "(sin referencia)", len(cambios)))
+        avisar_telegram(cambios, activos, fecha_ayer, base)
+        avisar_correo(cambios, activos, fecha_ayer, base)
+        parte_diario(activos, base)
+        for c in cambios:
+            r = c["reg"]
+            base_txt = "%s %s (%s, %s→%s)" % (r["tipo"], r["num"],
+                                              r["matricula"] or "s/m", r["salida"], r["devolucion"])
+            if c["tipo"] == "NUEVO":
+                registrar("  NUEVO ONEWAY: %s salida %s | %s" % (base_txt, r["fecha_salida"], r["estado"]))
+            elif c["tipo"] == "DESAPARECIDO":
+                registrar("  %s: %s" % ("ONEWAY ANULADO" if c.get("motivo") == "ANULADO"
+                                        else "YA NO ONEWAY", base_txt))
+            else:
+                for campo, viejo, nuevo in c["difs"]:
+                    registrar("  CAMBIO %s: %s '%s' → '%s'" % (base_txt, campo, viejo, nuevo))
+        # cada pasada mira si hay version nueva y la deja descargada; se aplica
+        # sola en el siguiente arranque
+        try:
+            buscar_actualizacion(descargar=True)
+        except Exception:
+            pass
+        # La tarea programada hace de guardian de la escucha: si se ha caido,
+        # la levanta. Es lo unico que corre con seguridad cada 2 horas.
+        try:
+            asegurar_escucha(base)
+        except Exception:
+            pass
+        registrar("=== PASADA TERMINADA ===")
+        return {"estado": "ok", "cambios": cambios, "activos": activos,
+                "referencia": fecha_ayer}
+    except Exception as e:
+        import traceback
+        registrar("ERROR EN LA PASADA: " + traceback.format_exc()[:1500])
+        # Avisar de que ha fallado: el silencio no puede significar dos cosas
+        # distintas ("todo bien" y "llevo dias roto").
+        msg = "%s: %s" % (type(e).__name__, str(e).split("\n")[0][:200])
+        avisar_fallo(msg, base)
+        return {"estado": "error", "error": msg}
+    finally:
+        despierto.__exit__()
+        latido.detener()
+        bloqueo.__exit__()
+
+
+def modo_desatendido(dias=7, ampliado=True):
+    """Lo que ejecuta la Tarea Programada. Devuelve 0 si todo fue bien, 1 si
+    hubo error y 2 si NO se ejecuto (otro equipo vigilando o pasada en curso)."""
+    r = ejecutar_pasada(dias, ampliado, "tarea")
+    return {"ok": 0, "error": 1, "otro_equipo": 2, "ocupado": 2}[r["estado"]]
+
+
+class MantenerDespierto:
+    """Impide que Windows duerma el equipo o MATE el proceso durante la pasada.
+
+    POR QUE HACE FALTA: con Modern Standby (S0), la tarea programada despierta
+    el portatil, pero como no hay actividad de usuario Windows lo vuelve a
+    suspender enseguida. El proceso se congela a media pasada y las descargas
+    mueren por tiempo de espera.
+
+    POR QUE NO BASTA CON SetThreadExecutionState (auditoria del 10/08/2026):
+    Microsoft documenta que en equipos con Modern Standby esa llamada se IGNORA.
+    Ahi hay que usar POWER REQUESTS, y en concreto `PowerRequestExecutionRequired`,
+    que es la unica que impide que el sistema SUSPENDA O TERMINE el proceso
+    durante el standby.
+    Sintoma que lo delato: las pasadas del 09 y 10/08 morian con codigo
+    0xE0000027 justo despues de enviar los avisos, SIN dejar evento de error en
+    Windows y SIN ejecutar el `finally` (el candado se quedaba sin borrar). Eso
+    no es un fallo del programa: es una terminacion desde fuera.
+
+    Se piden las dos cosas: la moderna (power request) y la antigua
+    (SetThreadExecutionState) como red de seguridad en equipos sin S0.
+    """
+    ES_CONTINUOUS = 0x80000000
+    ES_SYSTEM_REQUIRED = 0x00000001
+    ES_AWAYMODE_REQUIRED = 0x00000040
+
+    # POWER_REQUEST_TYPE
+    SISTEMA_REQUERIDO = 1        # PowerRequestSystemRequired: no suspender
+    EJECUCION_REQUERIDA = 3      # PowerRequestExecutionRequired: no matarme
+
+    def __init__(self):
+        self._h = None
+        self._puestas = []
+
+    def __enter__(self):
+        import ctypes
+        # 1) la antigua, por si el equipo no tiene Modern Standby
+        try:
+            ctypes.windll.kernel32.SetThreadExecutionState(
+                self.ES_CONTINUOUS | self.ES_SYSTEM_REQUIRED | self.ES_AWAYMODE_REQUIRED)
+        except Exception as e:
+            registrar("SetThreadExecutionState fallo: %s" % str(e)[:80])
+
+        # 2) la que de verdad cuenta en Modern Standby
+        try:
+            class _Razon(ctypes.Structure):
+                _fields_ = [("Version", ctypes.c_ulong),
+                            ("Flags", ctypes.c_ulong),
+                            ("SimpleReasonString", ctypes.c_wchar_p)]
+
+            k = ctypes.windll.kernel32
+            k.PowerCreateRequest.restype = ctypes.c_void_p
+            razon = _Razon(0, 0x1, "AVIS Monitor de Oneways: revision en curso")
+            h = k.PowerCreateRequest(ctypes.byref(razon))
+            if not h:
+                raise OSError("PowerCreateRequest devolvio nulo")
+            self._h = ctypes.c_void_p(h)
+            for tipo in (self.SISTEMA_REQUERIDO, self.EJECUCION_REQUERIDA):
+                if k.PowerSetRequest(self._h, tipo):
+                    self._puestas.append(tipo)
+            registrar("Equipo mantenido despierto (power requests: %s)."
+                      % (", ".join(str(t) for t in self._puestas) or "ninguna"))
+        except Exception as e:
+            registrar("No pude crear la power request: %s" % str(e)[:90])
+        return self
+
+    def __exit__(self, *a):
+        import ctypes
+        k = ctypes.windll.kernel32
+        try:
+            for tipo in self._puestas:
+                k.PowerClearRequest(self._h, tipo)
+            if self._h:
+                k.CloseHandle(self._h)
+        except Exception:
+            pass
+        try:
+            k.SetThreadExecutionState(self.ES_CONTINUOUS)
+        except Exception:
+            pass
+        return False
+
+
+def _minutos_suspension_ca():
+    """Minutos de inactividad tras los que el equipo se suspende ENCHUFADO.
+    None si no se puede averiguar. 0 = nunca.
+
+    OJO: `powercfg /query` informa en SEGUNDOS pero `powercfg /change` espera
+    MINUTOS. Aquí se devuelve en minutos para poder comparar y escribir con la
+    misma unidad.
+    """
+    import subprocess
+    try:
+        s = subprocess.run(["powercfg", "/query", "SCHEME_CURRENT", "SUB_SLEEP", "STANDBYIDLE"],
+                           capture_output=True, text=True, encoding="cp850",
+                           errors="replace", timeout=20,
+                           creationflags=0x08000000).stdout   # CREATE_NO_WINDOW
+        # Los valores salen en este orden: minimo, maximo, incremento, CA, CC.
+        # Se leen por posicion y no por el texto, que cambia con el idioma.
+        hexes = re.findall(r"0x[0-9a-fA-F]{8}", s)
+        if len(hexes) < 2:
+            return None
+        return int(hexes[-2], 16) // 60
+    except Exception:
+        return None
+
+
+def asegurar_sin_suspension(base=None):
+    """En un EQUIPO DEDICADO, vuelve a quitar la suspensión si alguien la repuso.
+
+    POR QUE: el portátil es corporativo y está gestionado con Puppet. Si una
+    directiva reaplica la política de energía, el equipo empieza a dormirse otra
+    vez y las pasadas se pierden EN SILENCIO — que es exactamente lo que pasó el
+    fin de semana del 8-10/08/2026 (9 pasadas de 32). No hace falta saber si
+    Puppet lo toca o no: se comprueba cada pasada y, si está mal, se corrige.
+
+    Solo actúa si existe el fichero `equipo_dedicado.txt` junto al programa, que
+    crea el instalador cuando se responde que SÍ es un equipo dedicado. En el
+    portátil de una persona NO se toca nunca la energía.
+    """
+    import subprocess
+    base = base or app_dir()
+    if not os.path.exists(os.path.join(base, "equipo_dedicado.txt")):
+        return None
+    actual = _minutos_suspension_ca()
+    if actual is None or actual == 0:
+        return actual
+    registrar("AVISO: la suspensión con enchufe estaba en %d min; la quito otra vez "
+              "(algo la ha repuesto: ¿directiva de empresa?)." % actual)
+    try:
+        for clave in ("standby-timeout-ac", "hibernate-timeout-ac"):
+            subprocess.run(["powercfg", "/change", clave, "0"], capture_output=True,
+                           timeout=20, creationflags=0x08000000)
+        nuevo = _minutos_suspension_ca()
+        if nuevo == 0:
+            registrar("  corregido: ya no se suspende con enchufe.")
+        else:
+            registrar("  NO pude corregirlo (sigue en %s). Puede que lo fuerce una "
+                      "directiva; habría que pedírselo a IT." % nuevo)
+            avisar_fallo("El equipo se sigue suspendiendo a los %s min pese a "
+                         "corregirlo. Se perderán revisiones." % nuevo, base)
+    except Exception as e:
+        registrar("  fallo al corregir la energía: %s" % str(e)[:90])
+    return actual
+
+
+LATIDO_ESCUCHA = "escucha_viva.txt"
+
+
+def _latir_escucha(base, cada_seg=60):
+    """La escucha deja constancia de que sigue viva."""
+    while True:
+        try:
+            with open(os.path.join(base, LATIDO_ESCUCHA), "w", encoding="utf-8") as f:
+                f.write(datetime.datetime.now().isoformat(timespec="seconds"))
+        except Exception:
+            pass
+        time.sleep(cada_seg)
+
+
+def asegurar_escucha(base=None):
+    """Si la escucha se ha muerto, la vuelve a arrancar.
+
+    POR QUE: la escucha es la que atiende /revisar y —en un equipo dedicado— la
+    que mantiene la maquina despierta. Si se cae, no hay nadie que la levante
+    hasta el siguiente inicio de sesion, que en un equipo desatendido puede no
+    llegar en semanas. Como la tarea programada SI corre cada 2 h, se aprovecha
+    para vigilarla: es el guardian natural.
+    """
+    base = base or app_dir()
+    marca = os.path.join(base, LATIDO_ESCUCHA)
+    try:
+        edad = (datetime.datetime.now() - datetime.datetime.fromisoformat(
+            open(marca, encoding="utf-8").read().strip())).total_seconds() / 60.0
+        if edad <= 5:
+            return True                      # viva y coleando
+        registrar("La escucha lleva %.0f min sin dar señales: la rearranco." % edad)
+    except Exception:
+        registrar("No hay señal de la escucha: la arranco.")
+
+    exe = sys.executable if getattr(sys, "frozen", False) else None
+    if not exe:
+        return False                         # en modo desarrollo no se relanza
+    try:
+        import subprocess
+        # DEVNULL + banderas: sin esto, en una app --windowed el hijo muere con
+        # el padre y no sirve de nada relanzarla.
+        subprocess.Popen([exe, "--escucha"], cwd=base,
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL,
+                         creationflags=0x00000008 | 0x08000000)  # DETACHED|NO_WINDOW
+        registrar("  escucha relanzada.")
+        return True
+    except Exception as e:
+        registrar("  no pude relanzar la escucha: %s" % str(e)[:90])
+        return False
+
+
+def _vigilar_energia(base, cada_seg=1800):
+    """Cada media hora revisa que nadie haya repuesto la suspensión.
+
+    La power request de la escucha ya impide que el equipo se duerma, pero esto
+    es el segundo cinturón: si una directiva reaplica la política, se corrige
+    sin esperar a la siguiente pasada. Y si no se puede corregir, avisa.
+    """
+    while True:
+        try:
+            asegurar_sin_suspension(base)
+        except Exception:
+            pass
+        time.sleep(cada_seg)
+
+
+def esperar_red(intentos=12, espera=10, log=None):
+    """Tras despertar, la Wi-Fi tarda en volver (Modern Standby corta la red).
+    Se espera a que Rentway responda antes de empezar."""
+    import urllib.request
+    log = log or registrar
+    for i in range(intentos):
+        try:
+            urllib.request.urlopen("https://aviscanarias.jimpisoft.pt/login", timeout=10)
+            if i:
+                log("Red disponible tras %d segundos de espera." % (i * espera))
+            return True
+        except Exception:
+            if i == 0:
+                log("Sin red todavia (normal al despertar). Esperando…")
+            time.sleep(espera)
+    log("La red no volvio tras %d segundos." % (intentos * espera))
+    return False
+
+
+def avisar_fallo(mensaje, base=None):
+    """Avisa por Telegram de que una pasada ha FALLADO.
+
+    Sin esto, un fallo es indistinguible de "no hay novedades": el sistema se
+    quedo 4 dias sin funcionar y no se entero nadie. Se limita a un aviso cada
+    6 h para no convertirlo en spam cada 2 horas.
+    """
+    try:
+        import credenciales, avisos
+        base = base or app_dir()
+        marca = os.path.join(base, "ultimo_aviso_fallo.txt")
+        ahora = datetime.datetime.now()
+        if os.path.exists(marca):
+            try:
+                with open(marca, encoding="utf-8") as f:
+                    previo = datetime.datetime.fromisoformat(f.read().strip())
+                if (ahora - previo).total_seconds() < 6 * 3600:
+                    registrar("Fallo repetido: no reenvio aviso (ya avise hace menos de 6 h).")
+                    return False
+            except Exception:
+                pass
+        token, chat = credenciales.cargar_telegram(base)
+        if not token or not chat:
+            return False
+        ok = avisos.enviar(token, chat,
+                           "⚠️ <b>AVIS · Monitor de Oneways</b>\n"
+                           "La revisión automática ha fallado y <b>no se ha podido comprobar "
+                           "si hay oneways nuevos</b>.\n\n<code>%s</code>\n\n"
+                           "Se reintentará en la siguiente pasada." % avisos._esc(mensaje[:400]),
+                           log=registrar)
+        if ok:
+            with open(marca, "w", encoding="utf-8") as f:
+                f.write(ahora.isoformat(timespec="seconds"))
+        registrar("Aviso de FALLO por Telegram: %s" % ("enviado" if ok else "no enviado"))
+        return ok
+    except Exception:
+        return False
+
+
+def parte_diario(activos, base=None):
+    """Una vez al día, aunque no haya cambios, manda un 'sigo vigilando'.
+
+    POR QUE: sin esto, no recibir nada significa dos cosas —que no hay
+    novedades o que lleva días parado— y desde fuera de la oficina no hay
+    forma de distinguirlas. Un mensaje al día no molesta y despeja la duda.
+    """
+    try:
+        import credenciales, avisos
+        base = base or app_dir()
+        marca = os.path.join(base, "ultimo_parte.txt")
+        hoy = datetime.date.today().isoformat()
+        if os.path.exists(marca):
+            try:
+                with open(marca, encoding="utf-8") as f:
+                    if f.read().strip() == hoy:
+                        return False          # ya se mandó hoy
+            except Exception:
+                pass
+        token, chat = credenciales.cargar_telegram(base)
+        if not token or not chat:
+            return False
+        if activos:
+            detalle = "\n".join(
+                "   · %s %s · %s → %s · sale %s"
+                % (avisos._esc(r["tipo"]), avisos._esc(r["num"]),
+                   avisos._esc(r["salida"]), avisos._esc(r["devolucion"]),
+                   avisos._esc(r["fecha_salida"]))
+                for r in sorted(activos, key=lambda x: x["fecha_salida"])[:10])
+            cuerpo = "Hay <b>%d oneway(s)</b> en los próximos días:\n%s" % (len(activos), detalle)
+        else:
+            cuerpo = "No hay ningún oneway en los próximos días."
+        ok = avisos.enviar(token, chat,
+                           "✅ <b>AVIS · Monitor de Oneways</b>\n"
+                           "Revisión funcionando correctamente (%s).\n\n%s\n\n"
+                           "<i>Reviso cada 2 horas. Solo aviso cuando hay cambios.</i>"
+                           % (datetime.datetime.now().strftime("%d/%m/%Y %H:%M"), cuerpo),
+                           log=registrar)
+        if ok:
+            with open(marca, "w", encoding="utf-8") as f:
+                f.write(hoy)
+        registrar("Parte diario por Telegram: %s" % ("enviado" if ok else "no enviado"))
+        return ok
+    except Exception:
+        return False
+
+
+def buscar_actualizacion(descargar=True, log=None):
+    """Consulta si hay version nueva. Devuelve (manifiesto, hay_novedad)."""
+    import actualizacion
+    log = log or registrar
+    m = actualizacion.consultar(url_actualizaciones(), log=log)
+    if not m:
+        return None, False
+    nueva = actualizacion.hay_novedad(m["version"], VERSION)
+    if nueva:
+        log("Hay una version nueva: %s (tienes la %s)" % (m["version"], VERSION))
+        if descargar:
+            actualizacion.descargar(m, app_dir(), log=log)
+    return m, nueva
+
+
+# ==================== MODO ESCUCHA (comandos de Telegram) ====================
+AYUDA = (
+    "<b>AVIS · Monitor de Oneways</b>\n"
+    "\n"
+    "/revisar — reviso Rentway ahora mismo (tarda 2-3 min)\n"
+    "/estado — última revisión, oneways activos y próxima pasada\n"
+    "/lista — los oneways activos ahora mismo\n"
+    "/ayuda — esto\n"
+    "\n"
+    "<i>Reviso solo cada 2 horas. Solo aviso cuando hay cambios.</i>"
+)
+
+
+def _ultima_pasada():
+    """Fecha y hora de la última pasada que terminó bien (cada una deja un
+    snapshot, así que el más reciente es la prueba de que funcionó)."""
+    files = sorted(glob.glob(os.path.join(carpeta_snapshots(), "snapshot_*.json")))
+    if not files:
+        return None
+    try:
+        return datetime.datetime.strptime(
+            os.path.basename(files[-1])[9:-5], "%Y-%m-%d_%H%M")
+    except Exception:
+        return None
+
+
+def _proxima_pasada():
+    """La tarea corre a las horas pares; se calcula la siguiente."""
+    ahora = datetime.datetime.now()
+    h = ahora.replace(minute=0, second=0, microsecond=0)
+    while h <= ahora or h.hour % 2 != 0:
+        h += datetime.timedelta(hours=1)
+    return h
+
+
+def _oneways_activos():
+    """Los activos según la última foto guardada (no hace falta ir a Rentway)."""
+    files = sorted(glob.glob(os.path.join(carpeta_snapshots(), "snapshot_*.json")))
+    if not files:
+        return []
+    try:
+        with open(files[-1], encoding="utf-8") as f:
+            return [r for r in json.load(f).values() if r.get("activo")]
+    except Exception:
+        return []
+
+
+def _linea_oneway(r):
+    import avisos
+    return ("   · %s %s · <b>%s</b> · %s → %s · sale %s"
+            % (avisos._esc(r.get("tipo")), avisos._esc(r.get("num")),
+               avisos._esc(r.get("matricula") or "sin matrícula"),
+               avisos._esc(r.get("salida")), avisos._esc(r.get("devolucion")),
+               avisos._esc(r.get("fecha_salida"))))
+
+
+def _texto_estado(base):
+    import instancia
+    ult = _ultima_pasada()
+    L = ["<b>AVIS · Estado</b>", ""]
+    if ult:
+        minutos = (datetime.datetime.now() - ult).total_seconds() / 60.0
+        aviso = "" if minutos < 180 else "  ⚠️ hace demasiado"
+        L.append("Última revisión: <b>%s</b> (hace %s)%s"
+                 % (ult.strftime("%d/%m %H:%M"), _hace(minutos), aviso))
+    else:
+        L.append("Última revisión: <b>ninguna todavía</b>")
+    en_curso = instancia.pasada_en_curso(base)
+    if en_curso:
+        L.append("Ahora mismo: <b>revisando</b> (desde hace %s min)" % en_curso.get("edad_min"))
+    else:
+        L.append("Próxima revisión: <b>%s</b>" % _proxima_pasada().strftime("%d/%m %H:%M"))
+    activos = _oneways_activos()
+    L.append("Oneways activos: <b>%d</b>" % len(activos))
+    L.append("")
+    L.append("<i>Versión %s · equipo %s</i>" % (VERSION, instancia.yo()["equipo"]))
+    return "\n".join(L)
+
+
+def _hace(minutos):
+    if minutos < 60:
+        return "%d min" % minutos
+    if minutos < 48 * 60:
+        return "%.1f h" % (minutos / 60.0)
+    return "%d días" % (minutos / 1440)
+
+
+def _texto_lista():
+    activos = _oneways_activos()
+    if not activos:
+        return "No hay ningún oneway activo ahora mismo."
+    activos.sort(key=lambda r: r.get("fecha_salida") or "")
+    L = ["<b>AVIS · %d oneway(s) activos</b>" % len(activos), ""]
+    L += [_linea_oneway(r) for r in activos[:25]]
+    if len(activos) > 25:
+        L.append("")
+        L.append("<i>… y %d más</i>" % (len(activos) - 25))
+    return "\n".join(L)
+
+
+def _revisar_ahora(chat_id, dias, base):
+    """Hace la pasada y contesta al chat con el resultado. Va en un hilo aparte
+    para que la escucha siga atendiendo comandos mientras tanto."""
+    import avisos, credenciales, instancia
+    token, _ = credenciales.cargar_telegram(base)
+    r = ejecutar_pasada(dias, True, "telegram")
+    if r["estado"] == "ok":
+        n = len(r["cambios"])
+        if n:
+            # el aviso con el detalle ya lo ha mandado la propia pasada
+            txt = "✅ Revisión terminada: <b>%d cambio(s)</b> (arriba el detalle)." % n
+        else:
+            txt = ("✅ Revisión terminada: <b>sin cambios</b>.\n"
+                   "%d oneway(s) activos." % len(r["activos"]))
+    elif r["estado"] == "ocupado":
+        txt = "⏳ Ya había una revisión en curso, no lanzo otra."
+    elif r["estado"] == "otro_equipo":
+        txt = ("⚠️ No he revisado: está vigilando otro equipo (%s)."
+               % (r["otra"] or {}).get("equipo"))
+    else:
+        txt = "❌ La revisión ha fallado:\n<code>%s</code>" % avisos._esc(r.get("error"))
+    avisos.enviar(token, chat_id, txt, log=registrar)
+
+
+def modo_escucha(dias=7):
+    """Se queda escuchando comandos de Telegram hasta que se cierre.
+
+    Es un proceso residente: arranca al iniciar sesión y no hace nada hasta que
+    alguien escribe un comando. La tarea programada sigue funcionando igual.
+    """
+    import credenciales, avisos, escucha, instancia
+    base = app_dir()
+    token, chat = credenciales.cargar_telegram(base)
+    if not token or not chat:
+        registrar("ESCUCHA: no arranco, no hay Telegram configurado.")
+        return 1
+
+    autorizados = escucha.chats_autorizados(base, chat)
+    trabajando = threading.Event()
+
+    def atender(cmd, args, chat_id):
+        if cmd in ("ayuda", "help", "start"):
+            return AYUDA
+        if cmd == "estado":
+            return _texto_estado(base)
+        if cmd == "lista":
+            return _texto_lista()
+        if cmd == "revisar":
+            if trabajando.is_set():
+                return "⏳ Ya estoy revisando, espera a que termine."
+            d = dias
+            if args:
+                try:
+                    d = max(1, min(60, int(args[0])))
+                except ValueError:
+                    pass
+            trabajando.set()
+
+            def tarea():
+                try:
+                    _revisar_ahora(chat_id, d, base)
+                finally:
+                    trabajando.clear()
+            threading.Thread(target=tarea, daemon=True).start()
+            return "🔄 Reviso Rentway ahora (%d días). Tardo 2-3 minutos…" % d
+        return "No conozco ese comando. Escribe /ayuda."
+
+    registrar("=== MODO ESCUCHA ARRANCADO (v%s) ===" % VERSION)
+    threading.Thread(target=_latir_escucha, args=(base,), daemon=True).start()
+
+    # EN UN EQUIPO DEDICADO, esta escucha es la que mantiene el equipo despierto.
+    #
+    # POR QUE ASI Y NO DE OTRA FORMA: el portatil es corporativo y no se puede
+    # pedir que lo excluyan de la directiva de energia. Pero una POWER REQUEST
+    # tiene prioridad sobre el temporizador de inactividad —es el mecanismo con
+    # el que un reproductor de video impide que el equipo se duerma— asi que da
+    # igual lo que diga la directiva: mientras este proceso viva, no se suspende.
+    #
+    # Y tiene que hacerlo LA ESCUCHA, no la pasada: la pasada solo corre cada 2
+    # horas, y si el equipo ya se durmio no llega a ejecutarse nunca. Era el
+    # circulo vicioso del fin de semana del 8-10/08/2026.
+    guardia = None
+    if os.path.exists(os.path.join(base, "equipo_dedicado.txt")):
+        registrar("Equipo dedicado: mantengo el equipo despierto mientras escucho.")
+        guardia = MantenerDespierto()
+        guardia.__enter__()
+        threading.Thread(target=_vigilar_energia, args=(base,), daemon=True).start()
+    try:
+        escucha.bucle(token, autorizados, atender, log=registrar,
+                      responder=lambda c, t: avisos.enviar(token, c, t, log=registrar))
+    except KeyboardInterrupt:
+        pass
+    finally:
+        if guardia:
+            guardia.__exit__()
+    registrar("=== MODO ESCUCHA DETENIDO ===")
+    return 0
+
+
+def main():
+    # Si quedo una actualizacion descargada, se aplica ANTES de nada y se
+    # relanza: un .exe no puede sobrescribirse a si mismo mientras corre.
+    try:
+        import actualizacion
+        if actualizacion.aplicar_si_toca(log=registrar):
+            return
+    except Exception:
+        pass
+
+    # Configuracion portable: si el clon del repositorio trae configuracion.json,
+    # se vuelca al almacen cifrado de ESTE equipo. Es lo que permite clonar y
+    # arrancar en un portatil nuevo sin reescribir credenciales a mano (los .dat
+    # no se pueden copiar: DPAPI los ata al equipo y usuario que los creo).
+    try:
+        import credenciales as _cred
+        for q in _cred.importar_configuracion(app_dir()):
+            registrar("Configuracion importada de configuracion.json: " + q)
+    except Exception as e:
+        registrar("No pude importar configuracion.json: %s" % str(e)[:120])
+
+    dias = 7
+    if "--dias" in sys.argv:
+        try:
+            dias = int(sys.argv[sys.argv.index("--dias") + 1])
+        except Exception:
+            pass
+
+    if "--desatendido" in sys.argv:
+        sys.exit(modo_desatendido(dias, "--sin-ampliados" not in sys.argv))
+
+    if "--escucha" in sys.argv:
+        sys.exit(modo_escucha(dias))
+
+    root = tk.Tk()
+    try:
+        root.iconbitmap(resource(os.path.join("assets", "avis.ico")))
+    except Exception:
+        pass
+    App(root)
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main()
