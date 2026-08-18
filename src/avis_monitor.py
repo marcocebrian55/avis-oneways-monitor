@@ -11,7 +11,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import openpyxl
 
-VERSION = "2.1.0"
+VERSION = "2.2.0"
 # URL del manifiesto de actualizaciones. Hoy apunta a la carpeta de OneDrive
 # compartida; el dia que se publique en GitHub Releases solo cambia esta linea
 # (o el fichero 'actualizacion.txt' que se pone al lado del .exe).
@@ -1662,6 +1662,27 @@ def modo_escucha(dias=7):
 
 
 def main():
+    # --version va LO PRIMERO y sin efectos: es la unica forma fiable de saber
+    # que version lleva dentro un .exe ya compilado (en un --onefile el codigo
+    # va comprimido, asi que buscar la cadena en el binario no sirve). Se usa
+    # para comprobar el build ANTES de publicarlo: si el binario y el manifiesto
+    # no coinciden, todos los equipos se actualizan en bucle en cada pasada.
+    #
+    # Se escribe TAMBIEN en un fichero porque el .exe se compila con --windowed
+    # y entonces no hay consola: el print no llega a ninguna parte.
+    if "--version" in sys.argv:
+        try:
+            print(VERSION)
+        except Exception:
+            pass
+        try:
+            with open(os.path.join(app_dir(), "version_actual.txt"), "w",
+                      encoding="utf-8") as f:
+                f.write(VERSION)
+        except Exception:
+            pass
+        return
+
     # Si quedo una actualizacion descargada, se aplica ANTES de nada y se
     # relanza: un .exe no puede sobrescribirse a si mismo mientras corre.
     try:
