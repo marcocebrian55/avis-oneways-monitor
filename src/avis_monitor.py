@@ -988,30 +988,50 @@ def url_actualizaciones(base=None):
     return "file:///" + os.path.abspath(p).replace("\\", "/")
 
 
-def avisar_correo(cambios, activos, referencia, base=None):
-    """Envía el aviso por correo. Solo ONEWAYS NUEVOS y si hay configuración.
+def _asunto_cambios(cambios):
+    """Resume los cambios en una linea. El asunto es lo unico que mucha gente
+    va a leer, asi que dice QUE ha pasado y no solo que ha pasado algo."""
+    n = len([c for c in cambios if c.get("tipo") == "NUEVO"])
+    f = len([c for c in cambios if c.get("tipo") == "DESAPARECIDO"])
+    m = len([c for c in cambios if c.get("tipo") == "CAMBIO"])
+    partes = []
+    if n:
+        partes.append("%d oneway%s NUEVO%s" % (n, "s" if n > 1 else "", "S" if n > 1 else ""))
+    if f:
+        partes.append("%d baja%s" % (f, "s" if f > 1 else ""))
+    if m:
+        partes.append("%d cambio%s" % (m, "s" if m > 1 else ""))
+    return "AVIS · " + (", ".join(partes) if partes else "sin novedades")
 
-    POR QUE SOLO LOS NUEVOS: por Telegram interesa todo (es un canal de trabajo
-    y se lee de un vistazo), pero el correo lo quiere el usuario como aviso de
-    alta: un oneway nuevo es lo unico que obliga a mover un coche. Las
-    modificaciones y las bajas seguirian llegando por Telegram igual.
+
+def avisar_correo(cambios, activos, referencia, base=None):
+    """Envía el aviso por correo, con EL MISMO CONTENIDO QUE TELEGRAM.
+
+    Antes solo mandaba los oneways NUEVOS, porque son los que obligan a mover
+    un coche. Cambiado el 24/08/2026 a peticion del usuario: los avisos tienen
+    que ir sincronizados. Motivo practico: la lista paso de 2 a 27 personas de
+    las cuatro islas, y la mayoria NO esta en el grupo de Telegram; con el
+    filtro anterior se habrian perdido las anulaciones y los cambios de
+    matricula o de hora, que tambien cambian el trabajo del dia.
+
+    `correo.cuerpo_cambios` ya sabia pintar los tres tipos: el filtro estaba
+    solo aqui.
     """
     try:
         import credenciales, correo
         base = base or app_dir()
         cfg = credenciales.cargar_correo(base)
-        nuevos = [c for c in cambios if c.get("tipo") == "NUEVO"]
-        if not cfg or not nuevos:
+        if not cfg or not cambios:
             return False
-        asunto = "AVIS · %d oneway(s) NUEVO(s)" % len(nuevos)
         ok = correo.enviar(cfg["servidor"], cfg["puerto"], cfg["usuario"], cfg["clave"],
-                           cfg["destinatarios"], asunto,
-                           correo.cuerpo_cambios(nuevos, activos, referencia),
+                           cfg["destinatarios"], _asunto_cambios(cambios),
+                           correo.cuerpo_cambios(cambios, activos, referencia),
                            remitente=cfg.get("remitente") or None,
                            log=registrar)
-        registrar("Aviso por correo %s (%d nuevo(s) de %d cambio(s), %d destinatario(s))"
-                  % ("enviado" if ok else "NO enviado", len(nuevos), len(cambios),
-                     len(str(cfg["destinatarios"]).replace(";", ",").split(","))))
+        registrar("Aviso por correo %s (%d cambio(s), %d destinatario(s))"
+                  % ("enviado" if ok else "NO enviado", len(cambios),
+                     len([x for x in str(cfg["destinatarios"]).replace(";", ",").split(",")
+                          if x.strip()])))
         return ok
     except Exception as e:
         registrar("Fallo al avisar por correo: %s" % str(e)[:120])
