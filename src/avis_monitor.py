@@ -43,6 +43,18 @@ def resource(rel):
 
 
 def app_dir():
+    """Carpeta donde vive el ESTADO: credenciales, snapshots, candados, marcas.
+
+    En Windows es la carpeta del programa, como siempre. En el servidor eso
+    seria el clon de git, y ahi el estado esta de prestado: los ficheros estan
+    en .gitignore, pero basta un `git clean -fdx` para borrar el historial de
+    snapshots y las credenciales. Con ONEWAYS_DATOS se separan codigo y datos,
+    que es lo que permite actualizar con un `git pull` sin tocar nada mas.
+    """
+    d = os.environ.get("ONEWAYS_DATOS")
+    if d:
+        os.makedirs(d, exist_ok=True)
+        return d
     if getattr(sys, "frozen", False):
         return os.path.dirname(sys.executable)
     return os.path.dirname(os.path.abspath(__file__))
