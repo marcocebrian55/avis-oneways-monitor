@@ -5,62 +5,44 @@ Vigila los **oneways** de Rentway (AVIS Canarias): reservas y contratos que se
 detecta los oneways, los compara con la pasada anterior y **avisa de todo cambio**
 por Telegram y correo.
 
-Corre desatendido en un equipo Windows: una tarea programada lanza una pasada
-cada 2 horas y un proceso de escucha atiende comandos de Telegram (`/revisar`).
+**Corre en un servidor Linux, 24 horas.** Un temporizador de systemd lanza una
+pasada cada 2 horas y un servicio de escucha atiende los comandos de Telegram.
+
+> **Para operarlo — entrar, cambiar la configuración, añadir destinatarios,
+> diagnosticar — está todo en [`docs/OPERACION.md`](docs/OPERACION.md).**
+> Esta página explica qué hace y cómo está construido; ésa, cómo se toca.
 
 > **Este repositorio no contiene ninguna credencial.** Las claves de Rentway, el
-> token del bot y la contraseña del correo se introducen al instalar y se guardan
-> **cifradas con DPAPI** en el propio equipo. Ver [Configuración](#configuración).
+> token del bot y la del correo viven en `/var/lib/oneways/configuracion.json`
+> **en el servidor**, con permisos 600 y fuera de git.
 
 ---
 
-## Instalar (uso normal)
+## Dónde corre
 
-Para dejarlo vigilando en un equipo Windows. **No hace falta Python, ni instalar
-nada como administrador.**
+| | |
+|---|---|
+| Servidor | Hetzner `oneways-avis` (Falkenstein), Ubuntu 24.04, 2 vCPU / 4 GB |
+| Código | `/opt/oneways/repo`, rama `main` |
+| Estado | `/var/lib/oneways` — **separado del clon de git** (`ONEWAYS_DATOS`) |
+| Servicios | `oneways-pasada.timer` (horas pares) · `oneways-escucha.service` |
 
-**1. Descarga la última versión**
+En producción desde el **24/08/2026**. Los 6 informes tardan **~75 s**.
 
-Ve a **[Releases](../../releases/latest)** y baja `AvisMonitorOneways.zip`. Trae
-dentro el `.exe`, el navegador (`ms-playwright`) y los scripts de instalación.
+### Historia: por qué dejó de correr en un portátil
 
-**2. Descomprime y ejecuta `INSTALAR.bat`**
+Vigiló desde un portátil Windows entre julio y agosto de 2026, y el problema
+nunca fue el código: era el equipo. Un fin de semana debía dar 32 pasadas y dio
+9, porque Windows lo suspendía a media pasada — Modern Standby, temporizadores
+de reactivación capados por directiva, y el proceso **muerto desde fuera** con
+`0xE0000027` sin dejar ni un evento. Se pelearon power requests, 12
+disparadores explícitos y un auto-reparador de la política de energía. Un
+servidor lo resuelve por no tener el problema.
 
-> Descomprime la carpeta **entera** antes de ejecutarlo: el `.bat` necesita los
-> ficheros que tiene al lado. Y ejecútalo con doble clic normal, **sin** «ejecutar
-> como administrador».
-
-Instala en `%LOCALAPPDATA%\AvisMonitorOneways`, crea los accesos directos, deja la
-tarea programada (12 pasadas al día) y arranca la escucha de Telegram.
-
-**3. Mete las credenciales**
-
-Abre *AVIS Monitor de Oneways* → botón **⚙ Configuración** y rellena Rentway,
-Telegram y, si lo quieres, el correo. Se guardan cifradas y no hay que repetirlo.
-
-**4. Comprueba que vive**
-
-Escribe **`/estado`** en el grupo de Telegram. Si contesta, está funcionando.
-`/revisar` fuerza una pasada en el momento.
-
-### Actualizar — **a mano**
-
-Baja el `.zip` de la última release y vuelve a ejecutar `INSTALAR.bat`. La
-configuración y el historial **no se tocan**: viven fuera de la carpeta del
-programa, en `%LOCALAPPDATA%\AvisMonitorOneways`.
-
-> **La auto-actualización está implementada pero hoy NO funciona, porque este
-> repositorio es privado.** `actualizacion.py` descarga con `urllib` sin
-> credenciales, y las URLs de assets de un repo privado responden **404 si no
-> vas autenticado** (comprobado: 404 anónimo, 200 con token). Los equipos
-> instalados no se enterarían de que hay versión nueva.
->
-> Para activarla habría que hacer el repositorio público, o darle al
-> actualizador un token de solo lectura. Mientras tanto **no pongas un
-> `actualizacion.txt` apuntando a GitHub**: no haría nada. Sin ese fichero, el
-> programa sencillamente no busca actualizaciones, que es lo que queremos ahora.
-
----
+Todo aquello **sigue en el código**, inerte tras `ES_WINDOWS`, y la ventana
+Tkinter también: se puede seguir abriendo la app en Windows para mirar. Lo que
+no debe volver es su **escucha de Telegram** — dos escuchas a la vez dan error
+409 y ninguna recibe nada.
 
 ## Cómo funciona
 
@@ -214,19 +196,31 @@ actualizaciones), `senal.txt` (carpeta compartida para la señal entre equipos),
   embebido en `-EncodedCommand`. Ojo al límite de **8191 caracteres por línea**.
 - **`Compress-Archive` escribe las rutas internas con barra invertida** y algunos
   descompresores dejan los ficheros sueltos. Genera el zip con Python (`zipfile`).
-- **El puerto SMTP 587 no funciona en la red de AVIS**: empieza en claro y el
-  cortafuegos lo corta. **El 465 sí** (cifrado desde el primer byte).
+- **Los puertos SMTP están al revés en cada sitio.** En la red de AVIS el 587
+  empieza en claro y el cortafuegos lo corta: allí hay que usar el **465**. En
+  Hetzner el **465 y el 25 están bloqueados de salida** y el que pasa es el
+  **587**. Al mover el sistema, revisa esto antes que nada.
+- **Rentway sirve la interfaz en el idioma que pide el navegador**, y el código
+  busca los elementos por su texto en español. En Windows funcionaba de
+  casualidad (Chromium heredaba el español del sistema); en Ubuntu arranca en
+  `en-US` y salía `aria-label='Username'`, así que no encontraba ni el login ni
+  «Generar informe». Se fija `locale="es-ES"`. **El síntoma no mencionaba el
+  idioma**: hablaba de credenciales inválidas.
+- **El perfil del navegador guarda el idioma.** Después de arreglar el locale
+  seguía fallando porque el perfil se había creado en inglés. Si tocas el
+  idioma, **borra la carpeta del perfil**.
 - **`powercfg /query` informa en segundos, `powercfg /change` espera minutos.**
 - **`Copy-Item -Recurse` anida** si el destino ya existe: borra el destino antes.
 - **`Set-ScheduledTask` y `schtasks /Create /XML` dan acceso denegado** en tareas de
   la raíz. Lo que funciona sin admin es `Register-ScheduledTask` de PowerShell.
 
-## Limitación conocida
+## Limitación conocida — resuelta al mover a servidor
 
-Hace falta una **sesión de Windows abierta**. Tras un reinicio o un corte de luz,
-alguien tiene que iniciar sesión una vez: el auto-logon requiere escribir en `HKLM`
-y `-LogonType S4U` da acceso denegado. La señal de que ha pasado es la **ausencia
-del parte diario**.
+Mientras corrió en Windows hacía falta una **sesión abierta**: tras un reinicio
+alguien tenía que iniciar sesión a mano, porque el auto-logon exige escribir en
+`HKLM` y `-LogonType S4U` daba acceso denegado. En el servidor no aplica —
+systemd arranca los servicios al encender, y está **probado con un reinicio
+completo**.
 
 ## Nota sobre la carpeta de entrega
 
