@@ -19,6 +19,31 @@ una página de este repositorio, que sea ésta.
 > (`~/.ssh/id_ed25519_oneways`). Si se pierde, hay que añadir otra clave desde
 > la consola de Hetzner (Rescue/Console), no hay otra puerta.
 
+## El panel web
+
+**http://100.126.67.96:8000** — desde el móvil o cualquier equipo **que esté en
+la red de Tailscale**.
+
+Tiene tres pestañas: **Estado** (oneways activos con las mismas columnas que la
+ventana del `.exe`, cambios de la última revisión y un botón para forzar una),
+**Registro** (las últimas 300 líneas del log) y **Ajustes** (editar los
+destinatarios del correo y mandar un correo de prueba).
+
+> **No pide contraseña, y es a propósito.** Escucha *sólo* en la dirección de
+> Tailscale, que no existe en la internet pública: quien llega ahí ya ha
+> demostrado ante Tailscale que pertenece a la red privada. Comprobado: por la
+> IP pública `91.99.185.207:8000` no responde nada.
+>
+> Por eso **la IP de escucha no se toca**. Está en
+> `/etc/systemd/system/oneways-panel.service`; si alguien la cambia a `0.0.0.0`
+> y abre el puerto, el panel queda expuesto y con él las credenciales de Rentway.
+
+**Para que alguien entre**, tiene que instalar Tailscale en su móvil o PC e
+iniciar sesión con la cuenta del tailnet. No hay otra vía, y ése es justamente
+el trato: se cambia comodidad por no tener nada abierto al mundo.
+
+Servicio: `systemctl status oneways-panel.service`
+
 ## La regla de oro
 
 **El código se cambia en el repositorio. La configuración, en el servidor.**
