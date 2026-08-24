@@ -1499,7 +1499,13 @@ def avisar_fallo(mensaje, base=None):
         return False
 
 
-HORA_PARTE = 8          # no se manda el parte antes de esta hora
+HORA_PARTE = 7          # no se manda el parte antes de esta hora
+
+# OJO SI SE CAMBIA: las pasadas van a horas PARES, asi que poner aqui una hora
+# impar no adelanta nada por si solo -- el parte saldria en la siguiente pasada
+# que haya. Las 07:00 funcionan porque el temporizador tiene un disparador
+# EXPLICITO a esa hora (oneways-pasada.timer), puesto para que el parte llegue
+# justo cuando abren las oficinas.
 
 
 def parte_diario(activos, base=None):
