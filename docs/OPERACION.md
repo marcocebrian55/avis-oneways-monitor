@@ -111,7 +111,15 @@ Desde fuera, sin entrar al servidor: escribe **`/estado`** en el grupo de
 Telegram. Si contesta, la escucha vive. Ojo, eso **no** prueba que el
 temporizador exista: para eso mira la línea *"Última revisión"*.
 
-Y todas las mañanas debe llegar el **parte diario ✅**. Si no llega, algo pasa.
+Y todas las mañanas, **entre las 07:00 y las 07:02**, debe llegar el **parte
+diario ✅**. Si no llega, algo pasa.
+
+> **El parte y la hora, ojo si lo tocas.** Se manda en la primera pasada
+> correcta del día a partir de `HORA_PARTE` (`avis_monitor.py`, hoy las 7).
+> Como las pasadas van a horas **pares**, una hora impar ahí no adelanta nada
+> por sí sola: las 07:00 funcionan porque el temporizador tiene un disparador
+> **explícito** a esa hora, puesto para que el parte llegue cuando abren las
+> oficinas. Si cambias una cosa, cambia la otra.
 
 ## Forzar una pasada
 
@@ -123,7 +131,7 @@ Y todas las mañanas debe llegar el **parte diario ✅**. Si no llega, algo pasa
 Están en las unidades, no en el código:
 
 ```bash
-nano /etc/systemd/system/oneways-pasada.timer     # OnCalendar
+nano /etc/systemd/system/oneways-pasada.timer     # OnCalendar (horas pares + 07:00)
 nano /etc/systemd/system/oneways-pasada.service   # --dias N
 systemctl daemon-reload
 ```

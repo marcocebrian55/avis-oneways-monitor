@@ -25,7 +25,7 @@ pasada cada 2 horas y un servicio de escucha atiende los comandos de Telegram.
 | Servidor | Hetzner `oneways-avis` (Falkenstein), Ubuntu 24.04, 2 vCPU / 4 GB |
 | Código | `/opt/oneways/repo`, rama `main` |
 | Estado | `/var/lib/oneways` — **separado del clon de git** (`ONEWAYS_DATOS`) |
-| Servicios | `oneways-pasada.timer` (horas pares) · `oneways-escucha.service` |
+| Servicios | `oneways-pasada.timer` (horas pares + 07:00) · `oneways-escucha.service` · `oneways-panel.service` |
 
 En producción desde el **24/08/2026**. Los 6 informes tardan **~75 s**.
 
@@ -62,9 +62,9 @@ Rentway (web)  --Playwright-->  6 informes .xlsx  -->  deteccion de oneways
 - **Un oneway es** una reserva o contrato con `estación de salida != estación de devolución`.
 - **Snapshot por pasada**, no por día: con 12 pasadas diarias, uno por día se
   pisaba a sí mismo y no se veía ningún cambio intradía.
-- **Solo se avisa si hay cambios.** Además, un **parte diario** ✅ en la primera
-  pasada correcta de cada jornada, para que el silencio no sea ambiguo, y un
-  aviso ⚠️ si una pasada falla (con 6 h de cooldown).
+- **Solo se avisa si hay cambios.** Además, un **parte diario** ✅ a las 07:00,
+  cuando abren las oficinas, para que el silencio no sea ambiguo, y un aviso ⚠️
+  si una pasada falla (con 6 h de cooldown).
 
 ## Los módulos
 
