@@ -62,6 +62,9 @@ def _preparar_navegadores(base):
     candidatos = [
         os.path.join(base, "ms-playwright"),
         os.path.join(os.environ.get("LOCALAPPDATA", ""), "ms-playwright"),
+        # Linux: donde los deja `playwright install chromium` en un servidor.
+        os.path.join(os.path.expanduser("~"), ".cache", "ms-playwright"),
+        "/ms-playwright",                     # imagen oficial de Playwright
     ]
     for c in candidatos:
         if c and os.path.isdir(c) and glob.glob(os.path.join(c, "chromium-*")):
@@ -72,6 +75,23 @@ def _preparar_navegadores(base):
         "Copia la carpeta 'ms-playwright' junto a este programa, o instálalos "
         "con 'playwright install chromium'.\n\nHe buscado en:\n  - "
         + "\n  - ".join(c for c in candidatos if c))
+
+
+def _perfil_ocupado(perfil):
+    """True si la carpeta de perfil parece estar tomada por otro Chromium.
+
+    No hay forma limpia y multiplataforma de preguntarlo, asi que se mira el
+    candado que deja el propio navegador: 'SingletonLock' en Linux (un enlace
+    simbolico) y 'lockfile' en Windows. Solo sirve para dar un mensaje mejor
+    cuando el arranque YA ha fallado, asi que un falso positivo no rompe nada.
+    """
+    try:
+        for nombre in ("SingletonLock", "lockfile"):
+            if os.path.lexists(os.path.join(perfil, nombre)):
+                return True
+    except Exception:
+        pass
+    return False
 
 
 CAJA_FECHA = ".dx-datebox input.dx-texteditor-input"
@@ -272,13 +292,34 @@ def descargar_informes(destino, dias=7, perfil=None, visible=False,
         # navegador NORMAL. Sin eso Playwright busca 'chrome-headless-shell',
         # un binario aparte de 267 MB que no vale la pena empaquetar.
         extra = {} if visible else {"channel": "chromium"}
-        ctx = p.chromium.launch_persistent_context(
-            perfil, headless=not visible, accept_downloads=True,
-            args=["--no-first-run", "--no-default-browser-check",
-                  "--disable-background-timer-throttling"],
-            viewport=None if visible else {"width": 1600, "height": 1000},
-            **extra
-        )
+        args = ["--no-first-run", "--no-default-browser-check",
+                "--disable-background-timer-throttling"]
+        if os.name != "nt":
+            # En un contenedor /dev/shm son 64 MB por defecto y Chromium se cae
+            # a pedazos. Con esto usa /tmp. No estorba en un VPS normal.
+            args.append("--disable-dev-shm-usage")
+        try:
+            ctx = p.chromium.launch_persistent_context(
+                perfil, headless=not visible, accept_downloads=True,
+                args=args,
+                viewport=None if visible else {"width": 1600, "height": 1000},
+                **extra
+            )
+        except Exception as e:
+            # Si OTRO Chromium tiene abierto este perfil, Playwright muere con
+            # un TargetClosedError de cuarenta lineas que no menciona la
+            # palabra "perfil" por ningun lado. Paso de verdad el 24/08/2026:
+            # un navegador olvidado cuatro dias antes con
+            # --remote-debugging-port bloqueaba la carpeta y el log no daba la
+            # menor pista. En un servidor desatendido eso es una hora de
+            # diagnostico a ciegas.
+            if _perfil_ocupado(perfil):
+                raise RuntimeError(
+                    "El perfil del navegador esta EN USO por otro Chromium." +
+                    os.linesep + "  Perfil: " + str(perfil) + os.linesep +
+                    "Cierra ese navegador, o pasa otra carpeta de perfil, y "
+                    "vuelve a intentarlo.") from e
+            raise
         try:
             pg = ctx.pages[0] if ctx.pages else ctx.new_page()
             lista = list(INFORMES_BASE) + (list(INFORMES_EXTRA) if ampliado else [])

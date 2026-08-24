@@ -121,15 +121,34 @@ def soltar(carpeta):
 
 
 def _proceso_vivo(pid):
-    """True si ese PID sigue existiendo en este equipo."""
+    """True si ese PID sigue existiendo en este equipo.
+
+    Hay una version por sistema. En Linux la de Windows lanzaba AttributeError
+    (`ctypes.windll` no existe) y caia en el `return True` de abajo, o sea que
+    un candado huerfano NUNCA se detectaba: tras un cuelgue el programa se
+    negaba a ejecutar pasadas hasta que el candado caducaba por edad (45 min).
+    """
     try:
-        import ctypes
-        SYNCHRONIZE = 0x00100000
-        h = ctypes.windll.kernel32.OpenProcess(SYNCHRONIZE, False, int(pid))
-        if h:
-            ctypes.windll.kernel32.CloseHandle(h)
+        pid = int(pid)
+        if pid <= 0:
+            return False
+        if os.name == "nt":
+            import ctypes
+            SYNCHRONIZE = 0x00100000
+            h = ctypes.windll.kernel32.OpenProcess(SYNCHRONIZE, False, pid)
+            if h:
+                ctypes.windll.kernel32.CloseHandle(h)
+                return True
+            return False
+        # POSIX: la senal 0 no hace nada, solo comprueba que el proceso existe.
+        # EPERM significa que existe pero es de otro usuario -> tambien vive.
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
             return True
-        return False
+        return True
     except Exception:
         return True          # ante la duda, suponer que vive (no pisar una pasada real)
 

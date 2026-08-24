@@ -11,51 +11,93 @@ al final del fichero hay un importador de 'configuracion.json': un fichero
 PORTABLE con los datos en claro que se vuelca a este almacen en el primer
 arranque. Quien tenga ese fichero tiene las claves.
 """
-import os, json, base64, ctypes
-from ctypes import wintypes
+import os, json, base64, stat
+
+ES_WINDOWS = (os.name == "nt")
+
+if ES_WINDOWS:
+    import ctypes
+    from ctypes import wintypes
+else:                                  # en Linux no existe ninguna de las dos
+    ctypes = wintypes = None
 
 
-class _BLOB(ctypes.Structure):
-    _fields_ = [("cbData", wintypes.DWORD),
-                ("pbData", ctypes.POINTER(ctypes.c_char))]
+if ES_WINDOWS:
+    # ---------------- Windows: DPAPI ----------------
+    class _BLOB(ctypes.Structure):
+        _fields_ = [("cbData", wintypes.DWORD),
+                    ("pbData", ctypes.POINTER(ctypes.c_char))]
+
+    def _a_blob(datos):
+        buf = ctypes.create_string_buffer(datos, len(datos))
+        return _BLOB(len(datos), ctypes.cast(buf, ctypes.POINTER(ctypes.c_char)))
+
+    def _de_blob(blob):
+        n = int(blob.cbData)
+        out = ctypes.create_string_buffer(n)
+        ctypes.memmove(out, blob.pbData, n)
+        ctypes.windll.kernel32.LocalFree(blob.pbData)
+        return out.raw
+
+    def cifrar(texto):
+        ent = _a_blob(b"AvisOneways")
+        dentro = _a_blob(texto.encode("utf-8"))
+        fuera = _BLOB()
+        ok = ctypes.windll.crypt32.CryptProtectData(
+            ctypes.byref(dentro), u"AvisOneways", ctypes.byref(ent),
+            None, None, 0, ctypes.byref(fuera))
+        if not ok:
+            raise OSError("CryptProtectData fallo")
+        return base64.b64encode(_de_blob(fuera)).decode("ascii")
+
+    def descifrar(texto_b64):
+        ent = _a_blob(b"AvisOneways")
+        datos = base64.b64decode(texto_b64.encode("ascii"))
+        dentro = _a_blob(datos)
+        fuera = _BLOB()
+        ok = ctypes.windll.crypt32.CryptUnprotectData(
+            ctypes.byref(dentro), None, ctypes.byref(ent),
+            None, None, 0, ctypes.byref(fuera))
+        if not ok:
+            raise OSError("CryptUnprotectData fallo (¿fichero de otro equipo o usuario?)")
+        return _de_blob(fuera).decode("utf-8")
+
+else:
+    # ---------------- Linux/servidor: permisos de fichero ----------------
+    #
+    # NO SE LLAMA CIFRADO A PROPOSITO. DPAPI funciona porque Windows guarda la
+    # clave maestra en el perfil del usuario y no la deja salir del equipo. En
+    # un servidor no hay equivalente: cualquier clave que pusieramos aqui
+    # tendria que estar en el disco, al lado del dato, y quien pueda leer una
+    # puede leer la otra. Un XOR casero no anadiria seguridad, solo la
+    # apariencia de tenerla, que es peor porque invita a bajar la guardia.
+    #
+    # Lo que de verdad protege el fichero es el modo 0600 y que el servicio
+    # corra con su propio usuario, igual que una clave SSH o un
+    # EnvironmentFile de systemd. El base64 solo evita que las claves salten a
+    # la vista de quien mire por encima del hombro o haga un `grep` distraido.
+    def cifrar(texto):
+        return "b64:" + base64.b64encode(texto.encode("utf-8")).decode("ascii")
+
+    def descifrar(texto):
+        if texto.startswith("b64:"):
+            return base64.b64decode(texto[4:].encode("ascii")).decode("utf-8")
+        # Un .dat traido de un Windows: DPAPI ata el cifrado a aquel equipo, asi
+        # que aqui es ilegible. Se dice claramente en vez de devolver basura.
+        raise OSError("Este .dat viene de un Windows (DPAPI) y no se puede leer "
+                      "en este servidor. Vuelve a poner las credenciales aqui, "
+                      "o usa variables de entorno.")
 
 
-def _a_blob(datos):
-    buf = ctypes.create_string_buffer(datos, len(datos))
-    return _BLOB(len(datos), ctypes.cast(buf, ctypes.POINTER(ctypes.c_char)))
-
-
-def _de_blob(blob):
-    n = int(blob.cbData)
-    out = ctypes.create_string_buffer(n)
-    ctypes.memmove(out, blob.pbData, n)
-    ctypes.windll.kernel32.LocalFree(blob.pbData)
-    return out.raw
-
-
-def cifrar(texto):
-    ent = _a_blob(b"AvisOneways")
-    dentro = _a_blob(texto.encode("utf-8"))
-    fuera = _BLOB()
-    ok = ctypes.windll.crypt32.CryptProtectData(
-        ctypes.byref(dentro), u"AvisOneways", ctypes.byref(ent),
-        None, None, 0, ctypes.byref(fuera))
-    if not ok:
-        raise OSError("CryptProtectData fallo")
-    return base64.b64encode(_de_blob(fuera)).decode("ascii")
-
-
-def descifrar(texto_b64):
-    ent = _a_blob(b"AvisOneways")
-    datos = base64.b64decode(texto_b64.encode("ascii"))
-    dentro = _a_blob(datos)
-    fuera = _BLOB()
-    ok = ctypes.windll.crypt32.CryptUnprotectData(
-        ctypes.byref(dentro), None, ctypes.byref(ent),
-        None, None, 0, ctypes.byref(fuera))
-    if not ok:
-        raise OSError("CryptUnprotectData fallo (¿fichero de otro equipo o usuario?)")
-    return _de_blob(fuera).decode("utf-8")
+def _proteger(ruta_fichero):
+    """Deja el fichero en 0600 (solo su dueno). En Windows no hace nada: alli
+    lo que protege es DPAPI, que ata el contenido al usuario y al equipo."""
+    if ES_WINDOWS:
+        return
+    try:
+        os.chmod(ruta_fichero, stat.S_IRUSR | stat.S_IWUSR)
+    except Exception:
+        pass
 
 
 def ruta(base):
@@ -65,10 +107,19 @@ def ruta(base):
 def guardar(base, usuario, clave):
     with open(ruta(base), "w", encoding="utf-8") as f:
         json.dump({"usuario": cifrar(usuario), "clave": cifrar(clave)}, f)
+    _proteger(ruta(base))
 
 
 def cargar(base):
-    """Devuelve (usuario, clave) o (None, None) si no hay o no se puede leer."""
+    """Devuelve (usuario, clave) o (None, None) si no hay o no se puede leer.
+
+    El entorno MANDA sobre el fichero. Es lo que permite que el servicio de
+    systemd reciba las claves por EnvironmentFile sin dejar ningun .dat en el
+    disco de la aplicacion, y que un contenedor se configure sin tocar nada."""
+    env_u = os.environ.get("RENTWAY_USUARIO")
+    env_c = os.environ.get("RENTWAY_CLAVE")
+    if env_u and env_c:
+        return env_u, env_c
     p = ruta(base)
     if not os.path.exists(p):
         return None, None
@@ -93,9 +144,14 @@ def guardar_telegram(base, token, chat_id):
     """El token da control TOTAL del bot a quien lo tenga: se cifra igual."""
     with open(ruta_telegram(base), "w", encoding="utf-8") as f:
         json.dump({"token": cifrar(token), "chat": cifrar(str(chat_id))}, f)
+    _proteger(ruta_telegram(base))
 
 
 def cargar_telegram(base):
+    env_t = os.environ.get("TELEGRAM_TOKEN")
+    env_c = os.environ.get("TELEGRAM_CHAT")
+    if env_t and env_c:
+        return env_t, env_c
     p = ruta_telegram(base)
     if not os.path.exists(p):
         return None, None
@@ -126,6 +182,7 @@ def guardar_correo(base, servidor, puerto, usuario, clave, destinatarios,
                    "clave": cifrar(clave), "destinatarios": destinatarios,
                    "remitente": remitente}, f,
                   ensure_ascii=False)
+    _proteger(ruta_correo(base))
 
 
 def cargar_correo(base):
