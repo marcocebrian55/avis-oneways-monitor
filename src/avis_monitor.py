@@ -1018,6 +1018,42 @@ def avisar_correo(cambios, activos, referencia, base=None):
         return False
 
 
+def probar_correo(destino=None, base=None):
+    """Manda un correo de prueba y cuenta lo que pasa. Devuelve True/False.
+
+    En Windows esto lo hacia el boton "Guardar y probar" de la ventana. En el
+    servidor no hay ventana, y comprobar la lista de destinatarios a base de
+    esperar a que aparezca un oneway nuevo no es forma de trabajar: pueden
+    pasar dias. Con `--probar-correo` se verifica en veinte segundos.
+
+    Sin argumento manda a TODA la lista configurada. Con una direccion detras,
+    solo a esa: sirve para probar sin molestar a los demas.
+    """
+    import credenciales, correo
+    base = base or app_dir()
+    cfg = credenciales.cargar_correo(base)
+    if not cfg:
+        registrar("PRUEBA DE CORREO: no hay configuracion de correo guardada.")
+        return False
+    para = destino or cfg["destinatarios"]
+    lista = [d.strip() for d in str(para).replace(";", ",").split(",") if d.strip()]
+    registrar("PRUEBA DE CORREO -> %s (via %s:%s como %s)"
+              % (", ".join(lista), cfg["servidor"], cfg["puerto"], cfg["usuario"]))
+    cuerpo = (
+        "<div style=\"font-family:Segoe UI,Arial,sans-serif\">"
+        "<h2 style=\"color:#D4002B;margin:0 0 4px\">AVIS &middot; Monitor de Oneways</h2>"
+        "<p>Esto es un <b>correo de prueba</b>. Si lo estas leyendo, esta "
+        "direccion recibira los avisos de <b>oneways nuevos</b>.</p>"
+        "<p style=\"color:#666;font-size:13px\">Enviado desde el servidor de "
+        "vigilancia el " + datetime.datetime.now().strftime("%d/%m/%Y a las %H:%M") +
+        ". No hay que responder.</p></div>")
+    ok = correo.enviar(cfg["servidor"], cfg["puerto"], cfg["usuario"], cfg["clave"],
+                       lista, "AVIS · Monitor de Oneways — correo de prueba",
+                       cuerpo, remitente=cfg.get("remitente") or None, log=registrar)
+    registrar("PRUEBA DE CORREO: %s" % ("ENVIADO" if ok else "FALLO"))
+    return ok
+
+
 def avisar_telegram(cambios, activos, referencia, base=None):
     """Manda el aviso SOLO si hay cambios. Un fallo aquí nunca tumba la pasada."""
     try:
@@ -1752,6 +1788,13 @@ def main():
             dias = int(sys.argv[sys.argv.index("--dias") + 1])
         except Exception:
             pass
+
+    if "--probar-correo" in sys.argv:
+        # Opcionalmente una direccion detras, para no molestar a la lista
+        # entera mientras se comprueba una direccion nueva.
+        i = sys.argv.index("--probar-correo") + 1
+        destino = sys.argv[i] if i < len(sys.argv) and not sys.argv[i].startswith("-") else None
+        sys.exit(0 if probar_correo(destino) else 1)
 
     if "--desatendido" in sys.argv:
         sys.exit(modo_desatendido(dias, "--sin-ampliados" not in sys.argv))
