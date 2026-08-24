@@ -47,6 +47,24 @@ DIAS_ATRAS_EXTRA = 60
 
 PERFIL_DEFECTO = os.path.join(os.path.expanduser("~"), "chrome-rentway-profile2")
 
+# Rentway sirve la interfaz EN EL IDIOMA QUE PIDE EL NAVEGADOR, y este fichero
+# busca los elementos por su texto en español ("Nombre de usuario",
+# "Contraseña", "Inicio de sesión", "Generar informe"). En Windows funcionaba
+# de casualidad: Chromium heredaba el español del sistema. En el servidor
+# (Ubuntu en Alemania) arranca en en-US, Rentway devolvia la pagina en INGLES
+# con aria-label='Username', y NINGUN selector encontraba nada. El sintoma no
+# decia una palabra del idioma: "Timeout 20000ms" y "no hay credenciales
+# validas guardadas", o sea que parecia un problema de contraseña.
+# Medido el 24/08/2026 en el servidor: document.documentElement.lang == "en"
+# y navigator.languages == ["en-US","en"].
+IDIOMA = "es-ES"
+
+# La zona horaria del navegador tambien se fija a proposito: los campos de
+# fecha se rellenan como DD/MM/YYYY calculados con la hora local del proceso.
+# Si el navegador estuviera en otro huso, un informe pedido a ultima hora del
+# dia podria irse al dia siguiente.
+ZONA_HORARIA = "Atlantic/Canary"
+
 
 def _preparar_navegadores(base):
     """Localiza el Chromium de Playwright.
@@ -151,7 +169,34 @@ def entrar_con_credenciales(pg, usuario, clave, log=print):
     """
     try:
         u = pg.locator("input[aria-label='Nombre de usuario']").first
-        u.wait_for(state="visible", timeout=20000)
+        try:
+            u.wait_for(state="visible", timeout=20000)
+        except Exception:
+            # Segunda oportunidad SIN depender del idioma. No deberia hacer
+            # falta porque el contexto se abre con locale es-ES, pero si algun
+            # dia Rentway decide el idioma por otra via (perfil del usuario,
+            # cabecera del servidor), el fallo era invisible: se veia un
+            # timeout y un mensaje sobre credenciales invalidas, y se perdian
+            # horas mirando la contraseña. Aqui se busca por estructura: la
+            # caja de contraseña es la unica type=password de la pagina, y el
+            # usuario es la caja de texto que la precede.
+            log("  El formulario no esta en español; busco los campos por estructura.")
+            c0 = pg.locator("input[type='password']").first
+            c0.wait_for(state="visible", timeout=20000)
+            u = pg.locator("input:not([type='password'])").first
+            u.wait_for(state="visible", timeout=10000)
+            c = c0
+            u.click(); u.fill(""); u.type(usuario, delay=25)
+            c.click(); c.fill(""); c.type(clave, delay=25)
+            c.press("Enter")
+            for _ in range(20):
+                pg.wait_for_timeout(1000)
+                if "/login" not in pg.url:
+                    log("  Sesión iniciada automáticamente como %s." % usuario)
+                    pg.wait_for_timeout(2000)
+                    return True
+            log("  El login automático no paso de la pantalla de acceso.")
+            return False
         c = pg.locator("input[aria-label='Contraseña']").first
         u.click(); u.fill(""); u.type(usuario, delay=25)
         c.click(); c.fill(""); c.type(clave, delay=25)
@@ -293,7 +338,8 @@ def descargar_informes(destino, dias=7, perfil=None, visible=False,
         # un binario aparte de 267 MB que no vale la pena empaquetar.
         extra = {} if visible else {"channel": "chromium"}
         args = ["--no-first-run", "--no-default-browser-check",
-                "--disable-background-timer-throttling"]
+                "--disable-background-timer-throttling",
+                "--lang=" + IDIOMA]
         if os.name != "nt":
             # En un contenedor /dev/shm son 64 MB por defecto y Chromium se cae
             # a pedazos. Con esto usa /tmp. No estorba en un VPS normal.
@@ -302,6 +348,8 @@ def descargar_informes(destino, dias=7, perfil=None, visible=False,
             ctx = p.chromium.launch_persistent_context(
                 perfil, headless=not visible, accept_downloads=True,
                 args=args,
+                # IMPRESCINDIBLE, no es cosmetico: ver la nota de IDIOMA.
+                locale=IDIOMA, timezone_id=ZONA_HORARIA,
                 viewport=None if visible else {"width": 1600, "height": 1000},
                 **extra
             )
