@@ -21,28 +21,39 @@ una página de este repositorio, que sea ésta.
 
 ## El panel web
 
-**http://100.126.67.96:8000** — desde el móvil o cualquier equipo **que esté en
-la red de Tailscale**.
+**https://oneways-avis.tail0a2ef7.ts.net** — desde el móvil o cualquier equipo
+**que esté en la red de Tailscale**. Sin puerto y con candado: certificado real
+de Let's Encrypt, emitido por Tailscale.
 
 Tiene tres pestañas: **Estado** (oneways activos con las mismas columnas que la
 ventana del `.exe`, cambios de la última revisión y un botón para forzar una),
 **Registro** (las últimas 300 líneas del log) y **Ajustes** (editar los
 destinatarios del correo y mandar un correo de prueba).
 
-> **No pide contraseña, y es a propósito.** Escucha *sólo* en la dirección de
-> Tailscale, que no existe en la internet pública: quien llega ahí ya ha
-> demostrado ante Tailscale que pertenece a la red privada. Comprobado: por la
-> IP pública `91.99.185.207:8000` no responde nada.
->
-> Por eso **la IP de escucha no se toca**. Está en
-> `/etc/systemd/system/oneways-panel.service`; si alguien la cambia a `0.0.0.0`
-> y abre el puerto, el panel queda expuesto y con él las credenciales de Rentway.
+### Por qué no pide contraseña
+
+El panel escucha **sólo en `127.0.0.1`** — ni siquiera en la interfaz de
+Tailscale. La única puerta es `tailscale serve`, que sólo atiende a miembros
+del tailnet. Quien llega ahí ya ha demostrado ante Tailscale quién es, así que
+montarle encima un login propio sería poner una cerradura peor que la que ya
+hay.
+
+Comprobado el 24/08/2026: por la IP pública no responde **nada**, ni en el 8000
+ni en el 443.
+
+> **No cambies el `--host 127.0.0.1`** de
+> `/etc/systemd/system/oneways-panel.service`. Si alguien lo pone en `0.0.0.0`
+> y abre el puerto en ufw, el panel queda expuesto al mundo y con él las
+> credenciales de Rentway.
 
 **Para que alguien entre**, tiene que instalar Tailscale en su móvil o PC e
-iniciar sesión con la cuenta del tailnet. No hay otra vía, y ése es justamente
-el trato: se cambia comodidad por no tener nada abierto al mundo.
+iniciar sesión en el tailnet (cuenta `mcebrian@domingoalonsogroup.com`). No hay
+otra vía, y ése es el trato: se cambia comodidad por no tener nada abierto.
 
-Servicio: `systemctl status oneways-panel.service`
+```bash
+systemctl status oneways-panel.service    # el panel
+tailscale serve status                    # la puerta HTTPS
+```
 
 ## La regla de oro
 
