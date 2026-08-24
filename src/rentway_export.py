@@ -47,6 +47,24 @@ DIAS_ATRAS_EXTRA = 60
 
 PERFIL_DEFECTO = os.path.join(os.path.expanduser("~"), "chrome-rentway-profile2")
 
+# Rentway sirve la interfaz EN EL IDIOMA QUE PIDE EL NAVEGADOR, y este fichero
+# busca los elementos por su texto en español ("Nombre de usuario",
+# "Contraseña", "Inicio de sesión", "Generar informe"). En Windows funcionaba
+# de casualidad: Chromium heredaba el español del sistema. En el servidor
+# (Ubuntu en Alemania) arranca en en-US, Rentway devolvia la pagina en INGLES
+# con aria-label='Username', y NINGUN selector encontraba nada. El sintoma no
+# decia una palabra del idioma: "Timeout 20000ms" y "no hay credenciales
+# validas guardadas", o sea que parecia un problema de contraseña.
+# Medido el 24/08/2026 en el servidor: document.documentElement.lang == "en"
+# y navigator.languages == ["en-US","en"].
+IDIOMA = "es-ES"
+
+# La zona horaria del navegador tambien se fija a proposito: los campos de
+# fecha se rellenan como DD/MM/YYYY calculados con la hora local del proceso.
+# Si el navegador estuviera en otro huso, un informe pedido a ultima hora del
+# dia podria irse al dia siguiente.
+ZONA_HORARIA = "Atlantic/Canary"
+
 
 def _preparar_navegadores(base):
     """Localiza el Chromium de Playwright.
@@ -62,6 +80,9 @@ def _preparar_navegadores(base):
     candidatos = [
         os.path.join(base, "ms-playwright"),
         os.path.join(os.environ.get("LOCALAPPDATA", ""), "ms-playwright"),
+        # Linux: donde los deja `playwright install chromium` en un servidor.
+        os.path.join(os.path.expanduser("~"), ".cache", "ms-playwright"),
+        "/ms-playwright",                     # imagen oficial de Playwright
     ]
     for c in candidatos:
         if c and os.path.isdir(c) and glob.glob(os.path.join(c, "chromium-*")):
@@ -72,6 +93,47 @@ def _preparar_navegadores(base):
         "Copia la carpeta 'ms-playwright' junto a este programa, o instálalos "
         "con 'playwright install chromium'.\n\nHe buscado en:\n  - "
         + "\n  - ".join(c for c in candidatos if c))
+
+
+def _boton(pg, *nombres):
+    """Primer boton que exista con alguno de esos nombres.
+
+    El contexto se abre con locale es-ES, asi que lo normal es acertar con el
+    primero. La lista existe por un caso concreto y caro: un perfil creado
+    ANTES de fijar el idioma guarda el idioma elegido entonces, y la SPA de
+    Rentway sigue usandolo aunque el navegador pida español. Paso el
+    24/08/2026 en el servidor y el sintoma fue un 'Timeout 30000ms' sobre
+    get_attribute, que no sugiere el idioma ni de lejos.
+
+    (Si vuelve a pasar, la solucion de raiz es borrar la carpeta del perfil.)
+    """
+    ultimo = None
+    for n in nombres:
+        loc = pg.get_by_role("button", name=n)
+        try:
+            if loc.count():
+                return loc
+        except Exception:
+            pass
+        ultimo = loc
+    return ultimo
+
+
+def _perfil_ocupado(perfil):
+    """True si la carpeta de perfil parece estar tomada por otro Chromium.
+
+    No hay forma limpia y multiplataforma de preguntarlo, asi que se mira el
+    candado que deja el propio navegador: 'SingletonLock' en Linux (un enlace
+    simbolico) y 'lockfile' en Windows. Solo sirve para dar un mensaje mejor
+    cuando el arranque YA ha fallado, asi que un falso positivo no rompe nada.
+    """
+    try:
+        for nombre in ("SingletonLock", "lockfile"):
+            if os.path.lexists(os.path.join(perfil, nombre)):
+                return True
+    except Exception:
+        pass
+    return False
 
 
 CAJA_FECHA = ".dx-datebox input.dx-texteditor-input"
@@ -131,7 +193,34 @@ def entrar_con_credenciales(pg, usuario, clave, log=print):
     """
     try:
         u = pg.locator("input[aria-label='Nombre de usuario']").first
-        u.wait_for(state="visible", timeout=20000)
+        try:
+            u.wait_for(state="visible", timeout=20000)
+        except Exception:
+            # Segunda oportunidad SIN depender del idioma. No deberia hacer
+            # falta porque el contexto se abre con locale es-ES, pero si algun
+            # dia Rentway decide el idioma por otra via (perfil del usuario,
+            # cabecera del servidor), el fallo era invisible: se veia un
+            # timeout y un mensaje sobre credenciales invalidas, y se perdian
+            # horas mirando la contraseña. Aqui se busca por estructura: la
+            # caja de contraseña es la unica type=password de la pagina, y el
+            # usuario es la caja de texto que la precede.
+            log("  El formulario no esta en español; busco los campos por estructura.")
+            c0 = pg.locator("input[type='password']").first
+            c0.wait_for(state="visible", timeout=20000)
+            u = pg.locator("input:not([type='password'])").first
+            u.wait_for(state="visible", timeout=10000)
+            c = c0
+            u.click(); u.fill(""); u.type(usuario, delay=25)
+            c.click(); c.fill(""); c.type(clave, delay=25)
+            c.press("Enter")
+            for _ in range(20):
+                pg.wait_for_timeout(1000)
+                if "/login" not in pg.url:
+                    log("  Sesión iniciada automáticamente como %s." % usuario)
+                    pg.wait_for_timeout(2000)
+                    return True
+            log("  El login automático no paso de la pantalla de acceso.")
+            return False
         c = pg.locator("input[aria-label='Contraseña']").first
         u.click(); u.fill(""); u.type(usuario, delay=25)
         c.click(); c.fill(""); c.type(clave, delay=25)
@@ -223,7 +312,7 @@ def _un_informe(pg, url, f_ini, f_fin, destino, etiqueta, log, esperar_login,
     _rellenar_fecha(pg, 0, f_ini, log)
     _rellenar_fecha(pg, 1, f_fin, log)
 
-    btn = pg.get_by_role("button", name="Generar informe")
+    btn = _boton(pg, "Generar informe", "Generate report")
     if btn.get_attribute("aria-disabled") == "true":
         raise RuntimeError("[%s] 'Generar informe' sigue deshabilitado: revisa los parámetros." % etiqueta)
     btn.click()
@@ -272,13 +361,37 @@ def descargar_informes(destino, dias=7, perfil=None, visible=False,
         # navegador NORMAL. Sin eso Playwright busca 'chrome-headless-shell',
         # un binario aparte de 267 MB que no vale la pena empaquetar.
         extra = {} if visible else {"channel": "chromium"}
-        ctx = p.chromium.launch_persistent_context(
-            perfil, headless=not visible, accept_downloads=True,
-            args=["--no-first-run", "--no-default-browser-check",
-                  "--disable-background-timer-throttling"],
-            viewport=None if visible else {"width": 1600, "height": 1000},
-            **extra
-        )
+        args = ["--no-first-run", "--no-default-browser-check",
+                "--disable-background-timer-throttling",
+                "--lang=" + IDIOMA]
+        if os.name != "nt":
+            # En un contenedor /dev/shm son 64 MB por defecto y Chromium se cae
+            # a pedazos. Con esto usa /tmp. No estorba en un VPS normal.
+            args.append("--disable-dev-shm-usage")
+        try:
+            ctx = p.chromium.launch_persistent_context(
+                perfil, headless=not visible, accept_downloads=True,
+                args=args,
+                # IMPRESCINDIBLE, no es cosmetico: ver la nota de IDIOMA.
+                locale=IDIOMA, timezone_id=ZONA_HORARIA,
+                viewport=None if visible else {"width": 1600, "height": 1000},
+                **extra
+            )
+        except Exception as e:
+            # Si OTRO Chromium tiene abierto este perfil, Playwright muere con
+            # un TargetClosedError de cuarenta lineas que no menciona la
+            # palabra "perfil" por ningun lado. Paso de verdad el 24/08/2026:
+            # un navegador olvidado cuatro dias antes con
+            # --remote-debugging-port bloqueaba la carpeta y el log no daba la
+            # menor pista. En un servidor desatendido eso es una hora de
+            # diagnostico a ciegas.
+            if _perfil_ocupado(perfil):
+                raise RuntimeError(
+                    "El perfil del navegador esta EN USO por otro Chromium." +
+                    os.linesep + "  Perfil: " + str(perfil) + os.linesep +
+                    "Cierra ese navegador, o pasa otra carpeta de perfil, y "
+                    "vuelve a intentarlo.") from e
+            raise
         try:
             pg = ctx.pages[0] if ctx.pages else ctx.new_page()
             lista = list(INFORMES_BASE) + (list(INFORMES_EXTRA) if ampliado else [])

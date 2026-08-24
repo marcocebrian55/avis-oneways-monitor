@@ -7,9 +7,24 @@ con el día anterior mostrando los cambios. Interfaz con marca AVIS.
 (La extracción automática de Rentway y los avisos Telegram/email se añaden encima.)
 """
 import os, sys, re, glob, json, time, datetime, threading, queue
-import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
 import openpyxl
+
+# Windows o no. Los bloques de energia, DPAPI y el guardian de la escucha solo
+# tienen sentido en un portatil Windows; en un servidor Linux son ruido o
+# directamente revientan. Se consulta en esos sitios en vez de duplicar modulos.
+ES_WINDOWS = (os.name == "nt")
+
+# Tkinter NO es obligatorio. En un servidor headless (Debian sin python3-tk)
+# este import fallaba y se llevaba por delante --desatendido y --escucha, que
+# no pintan ninguna ventana: el programa moria en la linea 10, antes de leer un
+# solo argumento.
+try:
+    import tkinter as tk
+    from tkinter import ttk, filedialog, messagebox
+    HAY_TK = True
+except Exception:                  # pragma: no cover - depende del sistema
+    tk = ttk = filedialog = messagebox = None
+    HAY_TK = False
 
 VERSION = "2.2.0"
 # URL del manifiesto de actualizaciones. Hoy apunta a la carpeta de OneDrive
@@ -28,6 +43,18 @@ def resource(rel):
 
 
 def app_dir():
+    """Carpeta donde vive el ESTADO: credenciales, snapshots, candados, marcas.
+
+    En Windows es la carpeta del programa, como siempre. En el servidor eso
+    seria el clon de git, y ahi el estado esta de prestado: los ficheros estan
+    en .gitignore, pero basta un `git clean -fdx` para borrar el historial de
+    snapshots y las credenciales. Con ONEWAYS_DATOS se separan codigo y datos,
+    que es lo que permite actualizar con un `git pull` sin tocar nada mas.
+    """
+    d = os.environ.get("ONEWAYS_DATOS")
+    if d:
+        os.makedirs(d, exist_ok=True)
+        return d
     if getattr(sys, "frozen", False):
         return os.path.dirname(sys.executable)
     return os.path.dirname(os.path.abspath(__file__))
@@ -1165,6 +1192,10 @@ class MantenerDespierto:
 
     def __enter__(self):
         import ctypes
+        # En un servidor no hay nada que mantener despierto: no se suspende
+        # nunca. Todo esto existe solo por Modern Standby en portatiles.
+        if not ES_WINDOWS:
+            return self
         # 1) la antigua, por si el equipo no tiene Modern Standby
         try:
             ctypes.windll.kernel32.SetThreadExecutionState(
@@ -1197,6 +1228,12 @@ class MantenerDespierto:
 
     def __exit__(self, *a):
         import ctypes
+        # OJO: esto se llama desde el `finally` de ejecutar_pasada. En Linux
+        # `ctypes.windll` no existe y la linea de abajo, que esta FUERA del
+        # try, tumbaba el final de TODAS las pasadas, incluidas las que habian
+        # ido bien.
+        if not ES_WINDOWS:
+            return False
         k = ctypes.windll.kernel32
         try:
             for tipo in self._puestas:
@@ -1221,6 +1258,8 @@ def _minutos_suspension_ca():
     misma unidad.
     """
     import subprocess
+    if not ES_WINDOWS:
+        return 0                      # un servidor nunca se suspende
     try:
         s = subprocess.run(["powercfg", "/query", "SCHEME_CURRENT", "SUB_SLEEP", "STANDBYIDLE"],
                            capture_output=True, text=True, encoding="cp850",
@@ -1299,6 +1338,10 @@ def asegurar_escucha(base=None):
     para vigilarla: es el guardian natural.
     """
     base = base or app_dir()
+    # En el servidor la escucha es un servicio de systemd con Restart=always:
+    # levantarla desde aqui seria una segunda mano peleandose con la primera.
+    if not ES_WINDOWS:
+        return True
     marca = os.path.join(base, LATIDO_ESCUCHA)
     try:
         edad = (datetime.datetime.now() - datetime.datetime.fromisoformat(
@@ -1715,6 +1758,16 @@ def main():
 
     if "--escucha" in sys.argv:
         sys.exit(modo_escucha(dias))
+
+    if not HAY_TK:
+        # Sin ventana y sin argumentos no hay nada que hacer, pero el mensaje
+        # tiene que decir QUE falta y COMO se arregla: en un servidor esto se
+        # lee en un log, no en una pantalla.
+        for linea in ("No hay interfaz grafica disponible (falta Tkinter).",
+                      "En un servidor usa:  --desatendido  |  --escucha",
+                      "Si de verdad quieres la ventana:  apt install python3-tk"):
+            print(linea, file=sys.stderr)
+        return 1
 
     root = tk.Tk()
     try:
