@@ -95,6 +95,30 @@ def _preparar_navegadores(base):
         + "\n  - ".join(c for c in candidatos if c))
 
 
+def _boton(pg, *nombres):
+    """Primer boton que exista con alguno de esos nombres.
+
+    El contexto se abre con locale es-ES, asi que lo normal es acertar con el
+    primero. La lista existe por un caso concreto y caro: un perfil creado
+    ANTES de fijar el idioma guarda el idioma elegido entonces, y la SPA de
+    Rentway sigue usandolo aunque el navegador pida español. Paso el
+    24/08/2026 en el servidor y el sintoma fue un 'Timeout 30000ms' sobre
+    get_attribute, que no sugiere el idioma ni de lejos.
+
+    (Si vuelve a pasar, la solucion de raiz es borrar la carpeta del perfil.)
+    """
+    ultimo = None
+    for n in nombres:
+        loc = pg.get_by_role("button", name=n)
+        try:
+            if loc.count():
+                return loc
+        except Exception:
+            pass
+        ultimo = loc
+    return ultimo
+
+
 def _perfil_ocupado(perfil):
     """True si la carpeta de perfil parece estar tomada por otro Chromium.
 
@@ -288,7 +312,7 @@ def _un_informe(pg, url, f_ini, f_fin, destino, etiqueta, log, esperar_login,
     _rellenar_fecha(pg, 0, f_ini, log)
     _rellenar_fecha(pg, 1, f_fin, log)
 
-    btn = pg.get_by_role("button", name="Generar informe")
+    btn = _boton(pg, "Generar informe", "Generate report")
     if btn.get_attribute("aria-disabled") == "true":
         raise RuntimeError("[%s] 'Generar informe' sigue deshabilitado: revisa los parámetros." % etiqueta)
     btn.click()
