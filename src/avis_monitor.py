@@ -1499,18 +1499,31 @@ def avisar_fallo(mensaje, base=None):
         return False
 
 
+HORA_PARTE = 8          # no se manda el parte antes de esta hora
+
+
 def parte_diario(activos, base=None):
     """Una vez al día, aunque no haya cambios, manda un 'sigo vigilando'.
 
     POR QUE: sin esto, no recibir nada significa dos cosas —que no hay
     novedades o que lleva días parado— y desde fuera de la oficina no hay
     forma de distinguirlas. Un mensaje al día no molesta y despeja la duda.
+
+    POR QUE NO ANTES DE LAS 8: se manda en la primera pasada correcta del día,
+    y en el portátil eso caía sobre las 09:00 porque el equipo estaba dormido
+    de madrugada. El servidor no duerme: su primera pasada del día es la de las
+    00:00, así que el parte pasó a llegar de madrugada, cuando no le sirve a
+    nadie. Es un cambio de comportamiento que introdujo la mudanza al servidor,
+    no una decisión de diseño de entonces.
     """
     try:
         import credenciales, avisos
         base = base or app_dir()
         marca = os.path.join(base, "ultimo_parte.txt")
-        hoy = datetime.date.today().isoformat()
+        ahora = datetime.datetime.now()
+        if ahora.hour < HORA_PARTE:
+            return False
+        hoy = ahora.date().isoformat()
         if os.path.exists(marca):
             try:
                 with open(marca, encoding="utf-8") as f:
