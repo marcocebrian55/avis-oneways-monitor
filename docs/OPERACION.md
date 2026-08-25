@@ -146,10 +146,15 @@ anulaciones y modificaciones.
 - **Correo**: los cambios, a la lista `destinatarios`. La mayoría **no está en
   Telegram**, y por eso el correo dejó de mandar sólo los oneways nuevos.
 
-> **Ahora mismo la lista son 4 direcciones, no las 27 de las cuatro islas.** Las
-> otras 24 están aparcadas en `_en_espera` dentro de `configuracion.json` desde
-> el 24/08/2026, a petición del usuario, hasta terminar las pruebas. Para
-> activarlas hay que **moverlas a `destinatarios`**; no basta con dejarlas ahí.
+> **Desde el 25/08/2026 la lista son las 28 direcciones de las cuatro islas.**
+> Las 24 que estaban aparcadas en `_en_espera` se activaron ese día y se les
+> mandó el correo de prueba. `_en_espera` quedó vacío; la copia previa está en
+> `/var/lib/oneways/configuracion.json.bak-antes-de-activar-24`.
+>
+> Si algún día se vuelve a tocar la lista: `_en_espera` **no** manda correos, es
+> solo un cajón. Para que una dirección reciba hay que ponerla en
+> `destinatarios`, y después `--probar-correo` — es la única forma de saber que
+> no rebota sin esperar a que aparezca un oneway.
 
 ### Los errores van aparte
 

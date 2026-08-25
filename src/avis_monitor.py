@@ -1063,7 +1063,12 @@ def probar_correo(destino=None, base=None):
         "<div style=\"font-family:Segoe UI,Arial,sans-serif\">"
         "<h2 style=\"color:#D4002B;margin:0 0 4px\">AVIS &middot; Monitor de Oneways</h2>"
         "<p>Esto es un <b>correo de prueba</b>. Si lo estas leyendo, esta "
-        "direccion recibira los avisos de <b>oneways nuevos</b>.</p>"
+        "direccion queda dada de alta en los avisos de <b>oneways</b>.</p>"
+        "<p style=\"color:#444\">Un <b>oneway</b> es una reserva o contrato que se "
+        "<b>entrega en una oficina y se devuelve en otra</b>. Recibiras un aviso "
+        "cuando aparezca uno nuevo, cuando se anule y cuando cambie algo suyo "
+        "(matricula, fechas o estado). <b>Solo se escribe si hay novedades</b>: "
+        "si no llega nada, es que no hay cambios.</p>"
         "<p style=\"color:#666;font-size:13px\">Enviado desde el servidor de "
         "vigilancia el " + datetime.datetime.now().strftime("%d/%m/%Y a las %H:%M") +
         ". No hay que responder.</p></div>")
