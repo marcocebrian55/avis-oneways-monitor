@@ -156,6 +156,13 @@ anulaciones y modificaciones.
 > `destinatarios`, y después `--probar-correo` — es la única forma de saber que
 > no rebota sin esperar a que aparezca un oneway.
 
+Los avisos a las oficinas van en **Bcc**: en el `To:` sólo se ve el buzón
+emisor (`aucc.rentway@`) y las 28 direcciones viajan ocultas. Con 28 personas en
+el `To:` se ven todas entre sí y cualquiera puede darle a "Responder a todos" y
+convertir un aviso automático en un hilo de 28. El `To:` al buzón emisor no es
+adorno: un mensaje **sin** cabecera `To:` parece correo masivo y se lo comen los
+filtros de spam. Lo hace `correo.enviar(..., oculto=True)`.
+
 ### Los errores van aparte
 
 Un fallo (⚠️) no se manda a las oficinas: va **sólo** a la dirección

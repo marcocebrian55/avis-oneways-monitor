@@ -44,9 +44,23 @@ def comprobar(servidor, puerto, usuario, clave):
 
 
 def enviar(servidor, puerto, usuario, clave, destinatarios, asunto, cuerpo_html,
-           remitente=None, log=None):
+           remitente=None, log=None, oculto=False):
     """Envia el aviso. Devuelve True/False y NUNCA lanza: un fallo de correo no
-    debe tumbar la vigilancia."""
+    debe tumbar la vigilancia.
+
+    `oculto=True` manda la lista en **Bcc** y deja en el To: el propio buzon
+    emisor. Se usa en los avisos a las oficinas, que desde el 25/08/2026 son 28
+    direcciones de las cuatro islas: en el To: se ven todas entre si y cualquiera
+    puede contestar a todos sin querer, convirtiendo un aviso automatico en un
+    hilo de 28 personas.
+
+    Ojo con el To: al buzon emisor: NO es adorno. Un mensaje sin cabecera To:
+    parece correo masivo y se lo comen los filtros de spam, que es justo lo peor
+    que le puede pasar a un aviso que solo llega cuando hay algo que hacer.
+
+    No hace falta borrar el Bcc a mano: `send_message` cuenta a esos
+    destinatarios en el sobre pero nunca transmite la cabecera.
+    """
     try:
         if isinstance(destinatarios, str):
             destinatarios = [d.strip() for d in destinatarios.replace(";", ",").split(",")
@@ -56,7 +70,17 @@ def enviar(servidor, puerto, usuario, clave, destinatarios, asunto, cuerpo_html,
         m = EmailMessage()
         m["Subject"] = asunto
         m["From"] = formataddr(("AVIS · Monitor de Oneways", remitente or usuario))
-        m["To"] = ", ".join(destinatarios)
+        if oculto:
+            visible = remitente or usuario
+            m["To"] = formataddr(("AVIS · Monitor de Oneways", visible))
+            # Fuera de la copia oculta el que ya va en el To:, o le llegaria el
+            # mismo aviso DOS veces: el buzon emisor suele estar tambien en la
+            # lista de destinatarios (aucc.rentway@ lo esta).
+            copia = [d for d in destinatarios if d.lower() != (visible or "").lower()]
+            if copia:
+                m["Bcc"] = ", ".join(copia)
+        else:
+            m["To"] = ", ".join(destinatarios)
         m.set_content("Este aviso se ve mejor en un lector con formato HTML.")
         m.add_alternative(cuerpo_html, subtype="html")
         s = _conectar(servidor, puerto, usuario, clave)

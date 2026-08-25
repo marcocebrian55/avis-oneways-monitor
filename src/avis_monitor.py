@@ -713,7 +713,7 @@ class App:
                              "AVIS · Monitor de Oneways — prueba",
                              "<p>Configuración de correo correcta.</p>"
                              "<p>A partir de ahora recibirás aquí los cambios en los oneways.</p>",
-                             remitente=remit or None):
+                             remitente=remit or None, oculto=True):
             messagebox.showerror("Correo", "Conecté con el servidor pero no pude enviar.")
             return
         credenciales.guardar_correo(app_dir(), serv, puerto, usu, cla, dest, remit)
@@ -1027,7 +1027,7 @@ def avisar_correo(cambios, activos, referencia, base=None):
                            cfg["destinatarios"], _asunto_cambios(cambios),
                            correo.cuerpo_cambios(cambios, activos, referencia),
                            remitente=cfg.get("remitente") or None,
-                           log=registrar)
+                           log=registrar, oculto=True)
         registrar("Aviso por correo %s (%d cambio(s), %d destinatario(s))"
                   % ("enviado" if ok else "NO enviado", len(cambios),
                      len([x for x in str(cfg["destinatarios"]).replace(";", ",").split(",")
@@ -1074,7 +1074,8 @@ def probar_correo(destino=None, base=None):
         ". No hay que responder.</p></div>")
     ok = correo.enviar(cfg["servidor"], cfg["puerto"], cfg["usuario"], cfg["clave"],
                        lista, "AVIS · Monitor de Oneways — correo de prueba",
-                       cuerpo, remitente=cfg.get("remitente") or None, log=registrar)
+                       cuerpo, remitente=cfg.get("remitente") or None, log=registrar,
+                       oculto=True)
     registrar("PRUEBA DE CORREO: %s" % ("ENVIADO" if ok else "FALLO"))
     return ok
 
