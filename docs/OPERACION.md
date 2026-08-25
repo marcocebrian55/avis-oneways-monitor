@@ -201,6 +201,27 @@ ruido.
   con dos, ninguna recibe nada (error 409). El portátil quedó desinstalado el
   24/08/2026 y no debe volver a arrancar su escucha.
 
+## El resumen de la noche (TEMPORAL)
+
+Todos los días a las **07:30** llega a `avisos_fallo` un correo con una tabla
+pasada a pasada del día: en cuáles bajó el informe de Abiertos y en cuáles no.
+Lo manda `oneways-resumen.timer` → `src/resumen_abiertos.py`.
+
+Existe sólo para entender por qué ese informe se cuelga de madrugada. **Cuando
+se sepa, se quita** — no debe quedarse ahí para siempre:
+
+```bash
+systemctl disable --now oneways-resumen.timer
+rm /etc/systemd/system/oneways-resumen.{timer,service}
+systemctl daemon-reload
+```
+
+Se puede pedir el de cualquier día a mano:
+
+```bash
+sudo -u oneways ONEWAYS_DATOS=/var/lib/oneways /opt/oneways/venv/bin/python   /opt/oneways/repo/src/resumen_abiertos.py 2026-08-25
+```
+
 ## Copias de seguridad
 
 Hetzner hace backups del disco entero (activados). Lo irreemplazable cabe en
