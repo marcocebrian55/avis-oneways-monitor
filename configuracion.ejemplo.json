@@ -19,6 +19,8 @@
     "clave": "",
     "remitente": "",
     "destinatarios": "",
+    "avisos_fallo": "",
+    "_nota_avisos_fallo": "Direccion de quien MANTIENE el sistema. Aqui llegan solo los AVISOS DE ERROR (la revision ha fallado, no se pudo bajar un informe), como mucho uno cada 6 h. NO lo pongas igual que 'destinatarios': a las oficinas un timeout de Chromium no les sirve de nada, y un aviso que no se puede accionar solo ensena a ignorar los avisos. Si se deja vacio, los errores van solo por Telegram.",
     "_nota": "PUERTO 465, no 587: el 587 empieza en claro y hay cortafuegos corporativos que lo cortan (pasa en la red de AVIS). En Gmail con verificacion en dos pasos la 'clave' debe ser una CONTRASENA DE APLICACION (myaccount.google.com/apppasswords), no la del usuario. 'remitente' es opcional y sirve para firmar como un buzon compartido; esa direccion debe estar dada de alta en 'Enviar como' de la cuenta que autentica, o Gmail la reescribe. 'destinatarios' admite varios separados por comas."
   }
 }

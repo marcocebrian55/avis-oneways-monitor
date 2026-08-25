@@ -169,18 +169,29 @@ def ruta_correo(base):
 
 
 def guardar_correo(base, servidor, puerto, usuario, clave, destinatarios,
-                   remitente=""):
+                   remitente="", avisos_fallo=None):
     """`remitente` es opcional: sirve para que el aviso salga DESDE otra
     direccion distinta de la que se usa para autenticarse.
 
     Caso real: un buzon compartido/delegado (aucc.rentway@...) no tiene
     contraseña propia, asi que hay que entrar con la cuenta personal pero firmar
     con la del buzon. Para que Gmail lo acepte, esa direccion debe estar dada de
-    alta en "Enviar como" de la cuenta que se autentica; si no, la reescribe."""
+    alta en "Enviar como" de la cuenta que se autentica; si no, la reescribe.
+
+    `avisos_fallo` es la direccion a la que van los AVISOS DE ERROR, que NO son
+    los mismos destinatarios que los avisos de oneways: un error lo arregla
+    quien mantiene el sistema, no las oficinas.
+
+    OJO, `avisos_fallo=None` significa "deja el que ya hubiera". Hace falta
+    porque el panel web y la ventana de Windows llaman aqui para guardar SOLO
+    la lista de destinatarios, sin saber de este campo; con un "" por defecto
+    lo borrarian sin querer cada vez que alguien toca la lista."""
+    if avisos_fallo is None:
+        avisos_fallo = (cargar_correo(base) or {}).get("avisos_fallo", "")
     with open(ruta_correo(base), "w", encoding="utf-8") as f:
         json.dump({"servidor": servidor, "puerto": str(puerto), "usuario": usuario,
                    "clave": cifrar(clave), "destinatarios": destinatarios,
-                   "remitente": remitente}, f,
+                   "remitente": remitente, "avisos_fallo": avisos_fallo}, f,
                   ensure_ascii=False)
     _proteger(ruta_correo(base))
 
@@ -195,6 +206,7 @@ def cargar_correo(base):
             d = json.load(f)
         d["clave"] = descifrar(d["clave"])
         d.setdefault("remitente", "")     # config guardada antes de existir el campo
+        d.setdefault("avisos_fallo", "")  # idem
         return d
     except Exception:
         return None
@@ -255,6 +267,7 @@ def importar_configuracion(base):
     if c.get("usuario") and _toca_importar(ruta_correo(base), p):
         guardar_correo(base, c.get("servidor", "smtp.gmail.com"),
                        c.get("puerto", "465"), c["usuario"], c.get("clave", ""),
-                       c.get("destinatarios", ""), c.get("remitente", ""))
+                       c.get("destinatarios", ""), c.get("remitente", ""),
+                       c.get("avisos_fallo", ""))
         hecho.append("correo")
     return hecho

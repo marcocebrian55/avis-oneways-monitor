@@ -77,6 +77,41 @@ def _esc(s):
     return (str(s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
 
 
+def cuerpo_fallo(mensaje, cuando=None, servidor=None):
+    """Cuerpo del aviso de ERROR. Va solo a quien mantiene el sistema.
+
+    POR QUE EXISTE: el fallo se avisaba unicamente por Telegram, y desde el
+    servidor Telegram se cae a ratos (timeouts de lectura contra api.telegram.org
+    varias veces al dia). Un aviso de averia que viaja por el mismo canal que
+    se puede averiar no sirve de mucho; el correo es la segunda pata.
+
+    Deliberadamente feo y directo: aqui no se viene a leer, se viene a enterarse
+    de que hay que mirar el log."""
+    return """<html><body style="font-family:Segoe UI,Arial,sans-serif;color:#222">
+<div style="border-top:4px solid %s;padding-top:10px;max-width:640px">
+  <div style="font-size:18px;font-weight:bold;color:%s">AVIS &middot; Monitor de Oneways</div>
+  <div style="font-size:15px;font-weight:bold;margin:10px 0 4px">&#9888; La revisi&oacute;n autom&aacute;tica ha fallado</div>
+  <div style="color:#444;font-size:14px">
+     No se ha podido comprobar si hay oneways nuevos. Mientras siga as&iacute;,
+     <b>no recibir&aacute;s avisos de cambios</b>: el silencio no significa que
+     no haya novedades.</div>
+  <div style="margin:14px 0;padding:10px 12px;background:#FAFAFB;border-left:4px solid %s">
+     <div style="color:#666;font-size:12px;margin-bottom:4px">%s</div>
+     <code style="font-size:13px;word-break:break-word">%s</code></div>
+  <div style="color:#444;font-size:14px">
+     Se reintentar&aacute; en la siguiente pasada. Si te llega esto varias veces
+     seguidas, hay que mirarlo:
+     <div style="margin-top:6px;font-family:Consolas,monospace;font-size:12.5px;color:#333">
+       ssh root@%s<br>
+       tail -60 /var/lib/oneways/avis_oneways.log</div></div>
+  <div style="color:#888;font-size:11px;margin-top:16px;border-top:1px solid #eee;padding-top:8px">
+     Aviso autom&aacute;tico de aver&iacute;a. Solo se manda a quien mantiene el
+     sistema, y como mucho una vez cada 6 h.</div>
+</div></body></html>""" % (_ROJO, _ROJO, _ROJO,
+                           _esc(cuando or ""), _esc(mensaje),
+                           _esc(servidor or "91.99.185.207"))
+
+
 def cuerpo_cambios(cambios, activos, referencia):
     """Mismo contenido que el aviso de Telegram, en HTML para correo."""
     def ficha(r):

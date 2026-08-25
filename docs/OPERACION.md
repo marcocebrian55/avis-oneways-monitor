@@ -143,8 +143,32 @@ anulaciones y modificaciones.
 
 - **Telegram** (grupo AVISOS ONEWAYS DAG): además, el parte diario ✅ y los
   fallos ⚠️ con 6 h de cooldown.
-- **Correo**: 27 destinatarios de las cuatro islas. La mayoría **no está en
+- **Correo**: los cambios, a la lista `destinatarios`. La mayoría **no está en
   Telegram**, y por eso el correo dejó de mandar sólo los oneways nuevos.
+
+> **Ahora mismo la lista son 4 direcciones, no las 27 de las cuatro islas.** Las
+> otras 24 están aparcadas en `_en_espera` dentro de `configuracion.json` desde
+> el 24/08/2026, a petición del usuario, hasta terminar las pruebas. Para
+> activarlas hay que **moverlas a `destinatarios`**; no basta con dejarlas ahí.
+
+### Los errores van aparte
+
+Un fallo (⚠️) no se manda a las oficinas: va **sólo** a la dirección
+`correo.avisos_fallo` de `configuracion.json` — hoy `mcebrian@aviscanarias.es`—
+y al grupo de Telegram. Un timeout de Chromium no le sirve de nada a un
+mostrador, y un aviso que no se puede accionar sólo enseña a ignorar los avisos.
+
+Se avisa cuando la pasada entera revienta y cuando **falta el informe de
+Abiertos**. Este segundo caso es el que motivó el correo: el 25/08/2026 se
+colgó en cinco pasadas seguidas (00:00 a 07:00) y sólo quedó constancia en el
+log. Ojo, cuando falta ese informe el programa **no** se queda sin datos de
+contratos: `encontrar_excels()` coge el `open_*.xlsx` más reciente de
+`Downloads`, que es el de una pasada anterior, así que compara contra datos
+viejos sin que se note.
+
+Sigue habiendo **6 h de cooldown** compartido entre los dos canales, y la marca
+sólo se escribe si el aviso salió por alguno: si no, un corte de red silenciaría
+los avisos justo cuando más falta hacen.
 
 Sólo se avisa **si hay cambios**. Con 12 pasadas al día, avisar siempre sería
 ruido.

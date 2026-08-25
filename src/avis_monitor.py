@@ -1143,12 +1143,28 @@ def ejecutar_pasada(dias=7, ampliado=True, quien="tarea"):
                       "esto fallara: abre el programa y guarda usuario y contraseña.")
         carpeta = os.path.join(os.path.expanduser("~"), "Downloads")
         import rentway_export
-        rentway_export.descargar_informes(
+        bajados = rentway_export.descargar_informes(
             carpeta, dias=dias, visible=False, esperar_login=0,
             log=registrar, base_app=base, ampliado=ampliado,
             credenciales=(usuario, clave) if usuario else None)
 
         fich = encontrar_excels(carpeta)
+        # Faltar el informe de Abiertos es un ERROR, no un aviso de log. El
+        # 25/08/2026 se colgo en CINCO pasadas seguidas (00:00 a 07:00) y solo
+        # quedo constancia en el log, que no lee nadie de madrugada.
+        #
+        # Y ojo con lo que pasa de verdad cuando falta: encontrar_excels() coge
+        # el open_*.xlsx MAS RECIENTE de Downloads, que es el de una pasada
+        # anterior. O sea que no es que "no se vean" los oneways de contratos,
+        # es que se comparan contra datos viejos, que es peor porque no se nota.
+        if not (bajados or {}).get("abiertos"):
+            viejo_abiertos = fich.get("abiertos")
+            avisar_fallo(
+                "No se pudo descargar el informe de Abiertos (contratos) tras dos "
+                "intentos. Los oneways de contratos se estan comparando contra %s."
+                % (("el fichero anterior: " + os.path.basename(viejo_abiertos))
+                   if viejo_abiertos else "nada"),
+                base)
         ow = leer_oneways(fich.get("reservas"), fich.get("abiertos"))
         enriquecer(ow, fich)
         anulados = leer_anulados(fich.get("anulados"))
@@ -1461,14 +1477,23 @@ def esperar_red(intentos=12, espera=10, log=None):
 
 
 def avisar_fallo(mensaje, base=None):
-    """Avisa por Telegram de que una pasada ha FALLADO.
+    """Avisa de que una pasada ha FALLADO, por Telegram y por correo.
 
     Sin esto, un fallo es indistinguible de "no hay novedades": el sistema se
     quedo 4 dias sin funcionar y no se entero nadie. Se limita a un aviso cada
     6 h para no convertirlo en spam cada 2 horas.
+
+    POR QUE TAMBIEN POR CORREO: desde el servidor, Telegram se cae a ratos
+    (varios timeouts al dia contra api.telegram.org). Un aviso de averia que
+    viaja solo por el canal que se puede averiar no es un aviso fiable.
+
+    El correo NO va a los destinatarios de los oneways: va a `avisos_fallo`,
+    la direccion de quien mantiene el sistema. A las oficinas no les sirve de
+    nada saber que Chromium ha dado un timeout, y un aviso que no se puede
+    accionar solo ensena a ignorar los avisos.
     """
     try:
-        import credenciales, avisos
+        import credenciales, avisos, correo
         base = base or app_dir()
         marca = os.path.join(base, "ultimo_aviso_fallo.txt")
         ahora = datetime.datetime.now()
@@ -1481,20 +1506,38 @@ def avisar_fallo(mensaje, base=None):
                     return False
             except Exception:
                 pass
+
+        ok_tg = False
         token, chat = credenciales.cargar_telegram(base)
-        if not token or not chat:
-            return False
-        ok = avisos.enviar(token, chat,
-                           "⚠️ <b>AVIS · Monitor de Oneways</b>\n"
-                           "La revisión automática ha fallado y <b>no se ha podido comprobar "
-                           "si hay oneways nuevos</b>.\n\n<code>%s</code>\n\n"
-                           "Se reintentará en la siguiente pasada." % avisos._esc(mensaje[:400]),
-                           log=registrar)
-        if ok:
+        if token and chat:
+            ok_tg = avisos.enviar(token, chat,
+                                  "⚠️ <b>AVIS · Monitor de Oneways</b>\n"
+                                  "La revisión automática ha fallado y <b>no se ha podido comprobar "
+                                  "si hay oneways nuevos</b>.\n\n<code>%s</code>\n\n"
+                                  "Se reintentará en la siguiente pasada." % avisos._esc(mensaje[:400]),
+                                  log=registrar)
+            registrar("Aviso de FALLO por Telegram: %s" % ("enviado" if ok_tg else "no enviado"))
+
+        ok_co = False
+        cfg = credenciales.cargar_correo(base)
+        destino = (cfg or {}).get("avisos_fallo", "")
+        if cfg and destino:
+            ok_co = correo.enviar(cfg["servidor"], cfg["puerto"], cfg["usuario"],
+                                  cfg["clave"], destino,
+                                  "⚠️ AVIS · Monitor de Oneways — la revisión ha fallado",
+                                  correo.cuerpo_fallo(mensaje[:400],
+                                                      ahora.strftime("%d/%m/%Y a las %H:%M")),
+                                  remitente=cfg.get("remitente") or None,
+                                  log=registrar)
+            registrar("Aviso de FALLO por correo a %s: %s"
+                      % (destino, "enviado" if ok_co else "NO enviado"))
+
+        # La marca se pone si el aviso SALIO POR ALGUN LADO. Si se pusiera
+        # siempre, un corte de red lo silenciaria 6 h justo cuando mas falta hace.
+        if ok_tg or ok_co:
             with open(marca, "w", encoding="utf-8") as f:
                 f.write(ahora.isoformat(timespec="seconds"))
-        registrar("Aviso de FALLO por Telegram: %s" % ("enviado" if ok else "no enviado"))
-        return ok
+        return ok_tg or ok_co
     except Exception:
         return False
 
