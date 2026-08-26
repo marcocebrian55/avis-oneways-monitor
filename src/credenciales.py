@@ -169,7 +169,7 @@ def ruta_correo(base):
 
 
 def guardar_correo(base, servidor, puerto, usuario, clave, destinatarios,
-                   remitente="", avisos_fallo=None):
+                   remitente="", avisos_fallo=None, por_isla=None):
     """`remitente` es opcional: sirve para que el aviso salga DESDE otra
     direccion distinta de la que se usa para autenticarse.
 
@@ -185,13 +185,23 @@ def guardar_correo(base, servidor, puerto, usuario, clave, destinatarios,
     OJO, `avisos_fallo=None` significa "deja el que ya hubiera". Hace falta
     porque la ventana de Windows llama aqui para guardar SOLO
     la lista de destinatarios, sin saber de este campo; con un "" por defecto
-    lo borrarian sin querer cada vez que alguien toca la lista."""
-    if avisos_fallo is None:
-        avisos_fallo = (cargar_correo(base) or {}).get("avisos_fallo", "")
+    lo borrarian sin querer cada vez que alguien toca la lista.
+
+    `por_isla` reparte los avisos: {"Tenerife": "a@x , b@y", ...}. Quien este
+    ahi recibe SOLO los oneways que tocan su isla, y `destinatarios` pasa a ser
+    el grupo que lo recibe todo. Vacio o ausente: se comporta como siempre,
+    todo a todos. Mismo sentinela None, y por el mismo motivo."""
+    if avisos_fallo is None or por_isla is None:
+        previo = cargar_correo(base) or {}
+        if avisos_fallo is None:
+            avisos_fallo = previo.get("avisos_fallo", "")
+        if por_isla is None:
+            por_isla = previo.get("por_isla") or {}
     with open(ruta_correo(base), "w", encoding="utf-8") as f:
         json.dump({"servidor": servidor, "puerto": str(puerto), "usuario": usuario,
                    "clave": cifrar(clave), "destinatarios": destinatarios,
-                   "remitente": remitente, "avisos_fallo": avisos_fallo}, f,
+                   "remitente": remitente, "avisos_fallo": avisos_fallo,
+                   "por_isla": por_isla}, f,
                   ensure_ascii=False)
     _proteger(ruta_correo(base))
 
@@ -207,6 +217,7 @@ def cargar_correo(base):
         d["clave"] = descifrar(d["clave"])
         d.setdefault("remitente", "")     # config guardada antes de existir el campo
         d.setdefault("avisos_fallo", "")  # idem
+        d.setdefault("por_isla", {})      # idem
         return d
     except Exception:
         return None
@@ -268,6 +279,6 @@ def importar_configuracion(base):
         guardar_correo(base, c.get("servidor", "smtp.gmail.com"),
                        c.get("puerto", "465"), c["usuario"], c.get("clave", ""),
                        c.get("destinatarios", ""), c.get("remitente", ""),
-                       c.get("avisos_fallo", ""))
+                       c.get("avisos_fallo", ""), c.get("por_isla") or {})
         hecho.append("correo")
     return hecho

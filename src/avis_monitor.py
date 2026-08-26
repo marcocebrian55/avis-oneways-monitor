@@ -1100,6 +1100,96 @@ def url_actualizaciones(base=None):
     return "file:///" + os.path.abspath(p).replace("\\", "/")
 
 
+_MAPA_ISLAS = None
+
+
+def mapa_islas():
+    """{codigo_oficina: isla}. Lo genera herramientas/mapa_islas.py del catalogo
+    de Rentway; aqui solo se lee. Si falta el fichero se devuelve {} y todo el
+    reparto se cae al lado seguro: todos reciben todo."""
+    global _MAPA_ISLAS
+    if _MAPA_ISLAS is None:
+        try:
+            with open(resource("oficinas_islas.json"), encoding="utf-8") as f:
+                _MAPA_ISLAS = json.load(f)
+        except Exception as e:
+            registrar("No pude leer el mapa de islas (%s). Todos recibiran todo."
+                      % str(e)[:90])
+            _MAPA_ISLAS = {}
+    return _MAPA_ISLAS
+
+
+def _lista(v):
+    if isinstance(v, (list, tuple, set)):
+        return [str(x).strip() for x in v if str(x).strip()]
+    return [d.strip() for d in str(v or "").replace(";", ",").split(",") if d.strip()]
+
+
+def islas_de(reg, mapa):
+    """Islas que toca un oneway y si alguna oficina es desconocida.
+
+    Son SIEMPRE dos oficinas, la que suelta el coche y la que lo recibe, y las
+    dos tienen que enterarse. Pueden caer en la misma isla --un TFN->TFS es
+    Tenerife y Tenerife-- porque oneway significa oficina distinta, no isla
+    distinta.
+    """
+    islas, desconocida = set(), False
+    for campo in ("salida", "devolucion"):
+        cod = str(reg.get(campo) or "").strip()
+        isla = mapa.get(cod)
+        if isla:
+            islas.add(isla)
+        else:
+            desconocida = True
+    return islas, desconocida
+
+
+def repartir(cambios, siempre, por_isla, mapa):
+    """Agrupa los avisos por DESTINATARIO, no por isla.
+
+    Si se mandara un correo por isla, quien cubre dos --moalvarez@ esta en
+    Fuerteventura y en Lanzarote-- recibiria dos veces el mismo aviso de un
+    oneway que va de una a otra. Asi cada persona sale una sola vez, con
+    exactamente los oneways que le tocan.
+
+    Devuelve [(destinatarios, cambios)] y la lista de oficinas sin isla.
+
+    REGLA DE ORO: lo que no se sabe se manda a TODO EL MUNDO, nunca a nadie. Una
+    oficina nueva o una isla sin lista tiene que producir un correo de mas, no un
+    silencio -- un silencio no se nota hasta que alguien pregunta por un coche.
+    """
+    todas = set(siempre)
+    for v in por_isla.values():
+        todas |= set(_lista(v))
+
+    para_quien, huerfanas = {}, set()
+    for i, c in enumerate(cambios):
+        islas, desconocida = islas_de(c["reg"], mapa)
+        destino = set(siempre)
+        if desconocida:
+            destino |= todas
+            for campo in ("salida", "devolucion"):
+                cod = str(c["reg"].get(campo) or "").strip()
+                if cod and cod not in mapa:
+                    huerfanas.add(cod)
+        for isla in islas:
+            gente = _lista(por_isla.get(isla))
+            if gente:
+                destino |= set(gente)
+            else:
+                # isla conocida pero sin nadie asignado (El Hierro, La Gomera)
+                destino |= todas
+                huerfanas.add(isla)
+        for d in destino:
+            para_quien.setdefault(d, set()).add(i)
+
+    lotes = {}
+    for correo_dest, indices in para_quien.items():
+        lotes.setdefault(frozenset(indices), []).append(correo_dest)
+    return ([(sorted(gente), [cambios[i] for i in sorted(idx)])
+             for idx, gente in lotes.items()], sorted(huerfanas))
+
+
 def _asunto_cambios(cambios):
     """Resume los cambios en una linea. El asunto es lo unico que mucha gente
     va a leer, asi que dice QUE ha pasado y no solo que ha pasado algo."""
@@ -1138,16 +1228,39 @@ def avisar_correo(cambios, activos, referencia, base=None):
         cfg = credenciales.cargar_correo(base)
         if not cfg or not cambios:
             return False
-        ok = correo.enviar(cfg["servidor"], cfg["puerto"], cfg["usuario"], cfg["clave"],
-                           cfg["destinatarios"], _asunto_cambios(cambios),
-                           correo.cuerpo_cambios(cambios, activos, referencia),
-                           remitente=cfg.get("remitente") or None,
-                           log=registrar, oculto=True)
-        registrar("Aviso por correo %s (%d cambio(s), %d destinatario(s))"
-                  % ("enviado" if ok else "NO enviado", len(cambios),
-                     len([x for x in str(cfg["destinatarios"]).replace(";", ",").split(",")
-                          if x.strip()])))
-        return ok
+
+        siempre = _lista(cfg.get("destinatarios"))
+        por_isla = cfg.get("por_isla") or {}
+        if por_isla:
+            lotes, huerfanas = repartir(cambios, siempre, por_isla, mapa_islas())
+        else:
+            # Sin reparto configurado se comporta como toda la vida. Es el
+            # camino por defecto a proposito: quien no haya configurado islas no
+            # debe descubrirlo porque un dia dejaron de llegarle avisos.
+            lotes, huerfanas = [(siempre, cambios)], []
+
+        alguno = False
+        for gente, trozo in lotes:
+            if not gente or not trozo:
+                continue
+            ok = correo.enviar(cfg["servidor"], cfg["puerto"], cfg["usuario"], cfg["clave"],
+                               gente, _asunto_cambios(trozo),
+                               correo.cuerpo_cambios(trozo, activos, referencia),
+                               remitente=cfg.get("remitente") or None,
+                               log=registrar, oculto=True)
+            alguno = alguno or ok
+            registrar("Aviso por correo %s (%d cambio(s), %d destinatario(s))"
+                      % ("enviado" if ok else "NO enviado", len(trozo), len(gente)))
+
+        if huerfanas:
+            # No es un detalle: significa que alguien ha recibido un correo que
+            # quiza no le tocaba, o --peor-- que hay una oficina cuya isla no
+            # sabemos. Se avisa para poder arreglar el mapa, no para tapar nada.
+            avisar_fallo("Sin isla asignada: %s. Esos oneways se han mandado a "
+                         "TODO EL MUNDO para no dejar a nadie sin avisar. Revisa "
+                         "el mapa de oficinas o la lista de destinatarios."
+                         % ", ".join(huerfanas[:12]), base)
+        return alguno
     except Exception as e:
         registrar("Fallo al avisar por correo: %s" % str(e)[:120])
         return False
