@@ -304,8 +304,53 @@ def _abrir_informe(pg, url, etiqueta, log, esperar_login, credenciales):
     _esperar_parametros(pg, etiqueta, log)
 
 
+def _diagnostico(pg, etiqueta, base_app, log):
+    """Deja constancia de QUE habia en pantalla cuando un informe reviento.
+
+    POR QUE: el informe de Abiertos lleva desde el 25/08/2026 colgandose cinco
+    veces por noche y lo unico que sabemos es "Timeout 180000ms exceeded". Eso
+    no distingue entre Rentway en mantenimiento, un error que la pagina esta
+    mostrando, una sesion caducada o un informe que de verdad tarda. Tres noches
+    de datos y ninguna pista, porque nadie miro la pantalla: no habia nadie.
+
+    Nunca lanza. Un fallo recogiendo pistas no puede tapar el fallo de verdad.
+    """
+    datos = []
+    try:
+        datos.append("url=" + str(pg.url)[:200])
+    except Exception:
+        pass
+    try:
+        datos.append("titulo=" + str(pg.title())[:120])
+    except Exception:
+        pass
+    try:
+        texto = pg.locator("body").inner_text(timeout=5000)
+        datos.append("pantalla=" + " ".join(texto.split())[:400])
+    except Exception:
+        datos.append("pantalla=(no se pudo leer)")
+    if datos:
+        log("  [%s] que habia en pantalla: %s" % (etiqueta, " | ".join(datos)))
+    try:
+        carpeta = os.path.join(base_app or os.getcwd(), "diagnostico")
+        os.makedirs(carpeta, exist_ok=True)
+        sello = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
+        ruta = os.path.join(carpeta, "%s_%s.png" % (etiqueta.replace(" ", "_"), sello))
+        pg.screenshot(path=ruta, full_page=False, timeout=10000)
+        log("  [%s] captura: %s" % (etiqueta, ruta))
+        # Sin poda esto llena el disco: 12 pasadas al dia por 2 intentos.
+        viejas = sorted(glob.glob(os.path.join(carpeta, "*.png")))
+        for f in viejas[:-40]:
+            try:
+                os.remove(f)
+            except Exception:
+                pass
+    except Exception as e:
+        log("  [%s] no pude sacar la captura: %s" % (etiqueta, str(e)[:100]))
+
+
 def _un_informe(pg, url, f_ini, f_fin, destino, etiqueta, log, esperar_login,
-               credenciales=None):
+               credenciales=None, base_app=None):
     log("  [%s] abriendo informe..." % etiqueta)
     _abrir_informe(pg, url, etiqueta, log, esperar_login, credenciales)
 
@@ -317,11 +362,18 @@ def _un_informe(pg, url, f_ini, f_fin, destino, etiqueta, log, esperar_login,
         raise RuntimeError("[%s] 'Generar informe' sigue deshabilitado: revisa los parámetros." % etiqueta)
     btn.click()
     log("  [%s] generando informe..." % etiqueta)
-    pg.wait_for_url("**/result", timeout=180000)
-    pg.wait_for_timeout(4000)
+    try:
+        pg.wait_for_url("**/result", timeout=180000)
+        pg.wait_for_timeout(4000)
 
-    with pg.expect_download(timeout=180000) as di:
-        pg.get_by_role("button", name="Excel").click()
+        with pg.expect_download(timeout=180000) as di:
+            pg.get_by_role("button", name="Excel").click()
+    except Exception:
+        # Aqui es donde muere el informe de Abiertos de madrugada. Se miran las
+        # pistas ANTES de propagar, que es el unico momento en que la pagina
+        # sigue en pie y se puede preguntar que esta mostrando.
+        _diagnostico(pg, etiqueta, base_app, log)
+        raise
     d = di.value
     ruta = os.path.join(destino, d.suggested_filename)
     d.save_as(ruta)
@@ -414,7 +466,7 @@ def descargar_informes(destino, dias=7, perfil=None, visible=False,
                     try:
                         salidas[clave] = _un_informe(pg, url, f_ini, f_fin, destino,
                                                      etiqueta, log, esperar_login,
-                                                     credenciales)
+                                                     credenciales, base_app)
                         break
                     except Exception as e:
                         log("  [%s] intento %d fallido: %s"
@@ -436,7 +488,8 @@ def descargar_informes(destino, dias=7, perfil=None, visible=False,
                     paso("Descargando: %s" % etiqueta)
                     try:
                         salidas[clave] = _un_informe(pg, url, x_ini, f_fin, destino,
-                                                     etiqueta, log, esperar_login, credenciales)
+                                                     etiqueta, log, esperar_login, credenciales,
+                                                     base_app)
                     except Exception as e:
                         salidas[clave] = None
                         log("  [%s] AVISO: no se pudo descargar (%s). Se continúa sin él."

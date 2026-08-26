@@ -173,14 +173,65 @@ def leer_oneways(reservas_path, abiertos_path):
                 # reserva) y contaria dos veces en el total de activos.
                 # Los datos del contrato pisan a los de la reserva porque son los
                 # reales: matricula asignada y fechas de verdad, no las previstas.
-                ow[clave_res].update({k: v for k, v in datos.items() if v not in (None, "")})
+                puestos = [k for k, v in datos.items() if v not in (None, "")]
+                ow[clave_res].update({k: datos[k] for k in puestos})
+                # Se apunta QUE campos ha puesto el contrato. Sirve para poder
+                # recuperarlos tal cual las pasadas en que el informe de Abiertos
+                # no baje (ver arrastrar_contratos): sin esta lista habria que
+                # adivinar cuales eran, y adivinar mal significa avisar de un
+                # cambio que no ha existido.
+                ow[clave_res]["_de_contrato"] = puestos
             else:
                 # Contrato sin reserva a la vista: o su reserva no era oneway (le
                 # cambiaron la oficina de devolucion al recoger) o quedo fuera de
                 # la ventana de fechas. En ambos casos hay un coche cruzando islas
                 # que hay que vigilar igual.
-                ow["CON-" + num] = dict(datos, tipo="Contrato", num=num)
+                ow["CON-" + num] = dict(datos, tipo="Contrato", num=num,
+                                        _de_contrato=list(datos))
     return ow
+
+
+def arrastrar_contratos(ow, ayer, log=None):
+    """Sin el informe de Abiertos, conserva lo ULTIMO que se supo de contratos.
+
+    POR QUE HACE FALTA: hasta el 26/08/2026 quedarse sin ese informe daba igual,
+    porque el lado de contratos estaba roto y no aportaba nada. Ahora que
+    funciona, hay tres caminos y dos son malos:
+
+      1. Reutilizar el open_*.xlsx de otra pasada. Es lo que hacia
+         encontrar_excels() sin decirlo, porque coge el mas reciente de
+         Downloads. Un contrato cerrado de madrugada sigue figurando abierto.
+      2. Ignorar los contratos. Entonces los oneways ya recogidos pierden su
+         contrato, el estado vuelve de "En curso" al de la reserva y sale un
+         aviso de cambio que no ha ocurrido -- a 28 personas, de madrugada.
+      3. Esta: arrastrar lo ultimo conocido y NO inventar cambios.
+
+    Con el informe colgandose cinco pasadas por noche, la 1 y la 2 harian
+    oscilar el sistema hasta las 08:00. Aqui no se avisa de nada porque, en
+    honor a la verdad, no se ha visto nada nuevo.
+    """
+    if not ayer:
+        return 0
+    arrastrados = 0
+    for clave, previo in ayer.items():
+        campos = previo.get("_de_contrato")
+        if not campos:
+            continue                      # nunca tuvo contrato: nada que arrastrar
+        if clave.startswith("CON-"):
+            if clave not in ow:           # contrato suelto que hoy no se ve
+                ow[clave] = dict(previo)
+                arrastrados += 1
+        elif clave in ow:                 # reserva ya recogida: devolverle lo suyo
+            for campo in campos:
+                if previo.get(campo) not in (None, ""):
+                    ow[clave][campo] = previo[campo]
+            ow[clave]["_de_contrato"] = campos
+            arrastrados += 1
+    if arrastrados and log:
+        log("  Sin informe de Abiertos: conservo lo ultimo conocido de %d "
+            "contrato(s). No se compara contra datos viejos ni se inventan cambios."
+            % arrastrados)
+    return arrastrados
 
 
 # ---------- datos ampliados (informes de enriquecimiento) ----------
@@ -1219,26 +1270,26 @@ def ejecutar_pasada(dias=7, ampliado=True, quien="tarea"):
             credenciales=(usuario, clave) if usuario else None)
 
         fich = encontrar_excels(carpeta)
-        # Faltar el informe de Abiertos es un ERROR, no un aviso de log. El
-        # 25/08/2026 se colgo en CINCO pasadas seguidas (00:00 a 07:00) y solo
-        # quedo constancia en el log, que no lee nadie de madrugada.
-        #
-        # Y ojo con lo que pasa de verdad cuando falta: encontrar_excels() coge
-        # el open_*.xlsx MAS RECIENTE de Downloads, que es el de una pasada
-        # anterior. O sea que no es que "no se vean" los oneways de contratos,
-        # es que se comparan contra datos viejos, que es peor porque no se nota.
-        if not (bajados or {}).get("abiertos"):
-            viejo_abiertos = fich.get("abiertos")
+        ayer, fecha_ayer = cargar_snapshot_anterior()
+
+        # OJO: se usa lo que se ha bajado EN ESTA PASADA (`bajados`), no lo que
+        # haya en Downloads. encontrar_excels() coge el fichero mas reciente que
+        # encuentre, asi que cuando Abiertos falla devuelve el de una pasada
+        # anterior sin decir nada, y los contratos se leen de datos viejos.
+        abiertos_hoy = (bajados or {}).get("abiertos")
+        ow = leer_oneways(fich.get("reservas"), abiertos_hoy)
+        if not abiertos_hoy:
+            # Faltar este informe es un ERROR, no una linea de log: el
+            # 25 y el 26/08/2026 se colgo en cinco pasadas seguidas (00:00 a
+            # 07:00) y de madrugada el log no lo lee nadie.
+            arrastrar_contratos(ow, ayer, registrar)
             avisar_fallo(
                 "No se pudo descargar el informe de Abiertos (contratos) tras dos "
-                "intentos. Los oneways de contratos se estan comparando contra %s."
-                % (("el fichero anterior: " + os.path.basename(viejo_abiertos))
-                   if viejo_abiertos else "nada"),
+                "intentos. Conservo lo ultimo conocido de los contratos; los "
+                "oneways de reserva se vigilan con normalidad.",
                 base)
-        ow = leer_oneways(fich.get("reservas"), fich.get("abiertos"))
         enriquecer(ow, fich)
         anulados = leer_anulados(fich.get("anulados"))
-        ayer, fecha_ayer = cargar_snapshot_anterior()
         # OJO: 'if ayer' era un BUG. Un snapshot sin oneways es {} y en Python
         # eso es falso, asi que se saltaba la comparacion y el PRIMER oneway
         # tras un periodo sin ninguno no se avisaba nunca.
