@@ -127,6 +127,40 @@ convertir un aviso automático en un hilo de 28. El `To:` al buzón emisor no es
 adorno: un mensaje **sin** cabecera `To:` parece correo masivo y se lo comen los
 filtros de spam. Lo hace `correo.enviar(..., oculto=True)`.
 
+### El reparto por islas
+
+Desde el 26/08/2026 cada oneway va **a sus dos islas**: la de la oficina que
+suelta el coche y la de la que lo recibe. Pueden ser la misma —un `TFN→TFS` es
+cosa de Tenerife y de nadie más—, porque oneway significa oficina distinta, no
+isla distinta.
+
+| | |
+|---|---|
+| `correo.destinatarios` | el grupo que lo recibe **todo** (9 personas) |
+| `correo.por_isla` | Fuerteventura 4 · Lanzarote 4 · Gran Canaria 7 · Tenerife 7 · La Palma 2 |
+| Mapa oficina→isla | `src/oficinas_islas.json`, 1915 oficinas |
+
+Se agrupa **por persona, no por isla**. Quien cubre dos —`moalvarez@` lleva
+Fuerteventura y Lanzarote— recibiría dos veces el mismo aviso justo en el caso
+más común, un oneway que va de una a otra.
+
+> **Un hueco tiene que hacer ruido, no silencio.** Una oficina que no esté en el
+> mapa, o una isla sin lista (hoy **El Hierro** y **La Gomera**), manda ese
+> oneway a **todo el mundo** y dispara un aviso a `avisos_fallo`. Nunca al revés:
+> un correo de más se ve, un silencio no se nota hasta que alguien pregunta por
+> un coche que no esperaba.
+
+Sin `por_isla` configurado se comporta como siempre, todo a todos. Es el defecto
+a propósito: nadie debe descubrir esta función porque un día dejaron de llegarle
+avisos.
+
+**Si cambia el catálogo de oficinas**, se regenera el mapa (Rentway >
+Configuraciones empresariales > Operaciones > Oficina > exportar):
+
+```bash
+py -3 herramientas/mapa_islas.py oficinas.xlsx
+```
+
 ### Los errores van aparte
 
 Un fallo (⚠️) no se manda a las oficinas: va **sólo** a la dirección
