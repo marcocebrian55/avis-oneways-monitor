@@ -9,6 +9,10 @@ $py = "C:\Users\mcebrian\AppData\Local\Python\pythoncore-3.14-64\python.exe"
 # Las rutas de --add-data se resuelven contra el --specpath, NO contra el cwd:
 # por eso van absolutas (trampa ya documentada en el README).
 $assets = Join-Path $raiz "src\assets"
+# El mapa oficina->isla tiene que viajar DENTRO del .exe. Si falta,
+# resource() no lo encuentra en un --onefile y el reparto por islas se cae
+# al lado seguro: todos reciben todo. No da error, solo correos de mas.
+$islas  = Join-Path $raiz "src\oficinas_islas.json"
 $icono  = Join-Path $assets "avis.ico"
 
 Write-Host "Compilando desde $raiz"
@@ -24,6 +28,7 @@ $ErrorActionPreference = 'Continue'
     --name AvisMonitorOneways `
     --icon $icono `
     --add-data "$assets;assets" `
+    --add-data "$islas;." `
     --collect-all playwright `
     --hidden-import rentway_export `
     --paths src `
