@@ -58,6 +58,7 @@ def texto_cambios(cambios, activos, referencia):
     L = ["<b>AVIS · Oneways</b>"]
     nuevos = [c for c in cambios if c["tipo"] == "NUEVO"]
     fuera = [c for c in cambios if c["tipo"] == "DESAPARECIDO"]
+    curso = [c for c in cambios if c["tipo"] == "EN_CURSO"]
     camb = [c for c in cambios if c["tipo"] == "CAMBIO"]
 
     def cabecera(r):
@@ -85,6 +86,16 @@ def texto_cambios(cambios, activos, referencia):
         L.append("❌ <b>%s</b>" % ("ONEWAY ANULADO" if c.get("motivo") == "ANULADO"
                                   else "YA NO ES ONEWAY"))
         L.append("   " + cabecera(r))
+
+    for c in curso:
+        r = c["reg"]
+        L.append("")
+        L.append("🚗 <b>ONEWAY EN CURSO</b> — el cliente ha recogido el coche")
+        L.append("   " + cabecera(r))
+        if r.get("contrato"):
+            L.append("   contrato %s" % _esc(r["contrato"]))
+        L.append("   devolver en <b>%s</b> el %s" % (_esc(r["devolucion"]),
+                                                     _esc(r["fecha_llegada"])))
 
     for c in camb:
         r = c["reg"]

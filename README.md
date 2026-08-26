@@ -25,7 +25,7 @@ pasada cada 2 horas y un servicio de escucha atiende los comandos de Telegram.
 | Servidor | Hetzner `oneways-avis` (Falkenstein), Ubuntu 24.04, 2 vCPU / 4 GB |
 | Código | `/opt/oneways/repo`, rama `main` |
 | Estado | `/var/lib/oneways` — **separado del clon de git** (`ONEWAYS_DATOS`) |
-| Servicios | `oneways-pasada.timer` (horas pares + 07:00) · `oneways-escucha.service` · `oneways-panel.service` |
+| Servicios | `oneways-pasada.timer` (horas pares + 07:00) · `oneways-escucha.service` |
 
 En producción desde el **24/08/2026**. Los 6 informes tardan **~75 s**.
 

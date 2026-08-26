@@ -159,6 +159,12 @@ def cuerpo_cambios(cambios, activos, referencia):
                 extra.append("email: %s" % _esc(r["email"]))
             if r.get("observaciones"):
                 extra.append("obs: %s" % _esc(r["observaciones"][:150]))
+        elif c["tipo"] == "EN_CURSO":
+            color, titulo = "#0057b8", "ONEWAY EN CURSO — el cliente ha recogido el coche"
+            extra = ["devolver en <b>%s</b> el %s" % (_esc(r["devolucion"]),
+                                                      _esc(r["fecha_llegada"]))]
+            if r.get("contrato"):
+                extra.append("contrato %s" % _esc(r["contrato"]))
         elif c["tipo"] == "DESAPARECIDO":
             color = "#b00000"
             titulo = "ONEWAY ANULADO" if c.get("motivo") == "ANULADO" else "YA NO ES ONEWAY"

@@ -127,20 +127,59 @@ def leer_oneways(reservas_path, abiertos_path):
     if abiertos_path and os.path.exists(abiertos_path):
         idx2, data2 = _leer_hoja(abiertos_path)
         for r in data2:
-            sal_id = _oficina_id(_col(idx2, r, "ID de la oficina"))
+            # OJO CON EL NOMBRE DE LA COLUMNA. El informe de Abiertos cambio de
+            # formato y la oficina de salida paso de "ID de la oficina" a
+            # "Oficina de salida". _col devuelve None cuando no la encuentra, o
+            # sea que sal_id quedaba vacio y el descarte de abajo se comia TODAS
+            # las filas: el lado de contratos llevaba muerto en silencio desde
+            # entonces (medido el 26/08/2026: 0 oneways de contrato, siempre).
+            # Se aceptan los dos nombres para que el proximo cambio de formato
+            # no lo vuelva a matar sin decir nada.
+            sal_id = _oficina_id(_col(idx2, r, "Oficina de salida", "ID de la oficina"))
             dev_id = _oficina_id(_col(idx2, r, "Oficina de devolución", "Oficina de devolucion"))
-            if not (sal_id and dev_id) or sal_id == dev_id:
-                continue
             num = _norm(_col(idx2, r, "N.º Contrato", "Contrato"))
-            ow["CON-" + num] = {
-                "tipo": "Contrato", "num": num,
+            num_res = _norm(_col(idx2, r, "N.º Reserva", "Reserva"))
+            clave_res = ("RES-" + num_res) if num_res else None
+
+            # Si falta cualquiera de las dos oficinas no se sabe si es oneway.
+            # No decidir es lo correcto: dar por hecho que NO lo es daria de baja
+            # oneways vivos por un hueco en los datos.
+            if not (sal_id and dev_id):
+                continue
+
+            if sal_id == dev_id:
+                # El contrato manda sobre la reserva: si al recoger el coche se
+                # devuelve a la misma oficina, ya no es oneway aunque la reserva
+                # siga diciendo lo contrario. Sale de la lista y eso genera su
+                # baja, que es exactamente lo que ha pasado.
+                if clave_res and clave_res in ow:
+                    del ow[clave_res]
+                continue
+
+            datos = {
                 "matricula": _matricula(_col(idx2, r, "Número de matrícula", "Numero de matricula")),
                 "salida": sal_id, "devolucion": dev_id,
                 "fecha_salida": _fecha(_col(idx2, r, "Fecha de salida")),
                 "fecha_llegada": _fecha(_col(idx2, r, "Fecha de regreso", "Fecha de retorno")),
                 "cliente": _norm(_col(idx2, r, "Nombre del cliente")),
-                "estado": "Abierto", "activo": True,
+                "estado": "En curso", "activo": True, "contrato": num,
             }
+
+            if clave_res and clave_res in ow:
+                # LA MISMA RESERVA, YA RECOGIDA: se fusiona en su clave RES- en
+                # vez de crear una CON- nueva. Si se creara, un solo coche
+                # saliendo del mostrador produciria dos avisos que se contradicen
+                # ("NUEVO ONEWAY" por el contrato y "YA NO ES ONEWAY" por la
+                # reserva) y contaria dos veces en el total de activos.
+                # Los datos del contrato pisan a los de la reserva porque son los
+                # reales: matricula asignada y fechas de verdad, no las previstas.
+                ow[clave_res].update({k: v for k, v in datos.items() if v not in (None, "")})
+            else:
+                # Contrato sin reserva a la vista: o su reserva no era oneway (le
+                # cambiaron la oficina de devolucion al recoger) o quedo fuera de
+                # la ventana de fechas. En ambos casos hay un coche cruzando islas
+                # que hay que vigilar igual.
+                ow["CON-" + num] = dict(datos, tipo="Contrato", num=num)
     return ow
 
 
@@ -229,6 +268,22 @@ def enriquecer(ow, fich):
 CAMPOS_VIGILADOS = ["matricula", "salida", "devolucion", "fecha_salida", "fecha_llegada", "estado", "activo"]
 
 
+def _recogido(antes, ahora):
+    """¿El cliente acaba de recoger el coche? (la reserva ya tiene contrato)
+
+    Dos senales, porque una sola no basta:
+      - Aparece numero de contrato. Es la buena, pero depende de que el informe
+        de Abiertos haya bajado, y ese se cuelga de madrugada.
+      - El estado de la reserva pasa a "Confirmed with RA" (RA = Rental
+        Agreement). Lo dice el propio informe de reservas, asi que funciona
+        aunque falte el de Abiertos.
+    """
+    if not antes.get("contrato") and ahora.get("contrato"):
+        return True
+    return ("with ra" not in str(antes.get("estado") or "").lower()
+            and "with ra" in str(ahora.get("estado") or "").lower())
+
+
 def comparar(hoy, ayer, anulados=None):
     anulados = anulados or {}
     cambios = []
@@ -239,7 +294,13 @@ def comparar(hoy, ayer, anulados=None):
             difs = [(c, ayer[clave].get(c), reg.get(c)) for c in CAMPOS_VIGILADOS
                     if str(ayer[clave].get(c)) != str(reg.get(c))]
             if difs:
-                cambios.append({"tipo": "CAMBIO", "reg": reg, "difs": difs, "motivo": ""})
+                # La recogida se cuenta aparte de un CAMBIO cualquiera: es el
+                # momento en que el coche SALE, y en un oneway eso es justo lo
+                # que le importa a la oficina de destino. Antes llegaba como
+                # "estado: Confirmed -> Confirmed with RA", que no le dice
+                # absolutamente nada a nadie en un mostrador.
+                tipo = "EN_CURSO" if _recogido(ayer[clave], reg) else "CAMBIO"
+                cambios.append({"tipo": tipo, "reg": reg, "difs": difs, "motivo": ""})
     for clave, reg in ayer.items():
         if clave not in hoy:
             motivo = ""
@@ -994,11 +1055,14 @@ def _asunto_cambios(cambios):
     n = len([c for c in cambios if c.get("tipo") == "NUEVO"])
     f = len([c for c in cambios if c.get("tipo") == "DESAPARECIDO"])
     m = len([c for c in cambios if c.get("tipo") == "CAMBIO"])
+    e = len([c for c in cambios if c.get("tipo") == "EN_CURSO"])
     partes = []
     if n:
         partes.append("%d oneway%s NUEVO%s" % (n, "s" if n > 1 else "", "S" if n > 1 else ""))
     if f:
         partes.append("%d baja%s" % (f, "s" if f > 1 else ""))
+    if e:
+        partes.append("%d recogido%s" % (e, "s" if e > 1 else ""))
     if m:
         partes.append("%d cambio%s" % (m, "s" if m > 1 else ""))
     return "AVIS · " + (", ".join(partes) if partes else "sin novedades")
@@ -1196,6 +1260,9 @@ def ejecutar_pasada(dias=7, ampliado=True, quien="tarea"):
             elif c["tipo"] == "DESAPARECIDO":
                 registrar("  %s: %s" % ("ONEWAY ANULADO" if c.get("motivo") == "ANULADO"
                                         else "YA NO ONEWAY", base_txt))
+            elif c["tipo"] == "EN_CURSO":
+                registrar("  ONEWAY EN CURSO (coche recogido): %s contrato %s"
+                          % (base_txt, r.get("contrato") or "?"))
             else:
                 for campo, viejo, nuevo in c["difs"]:
                     registrar("  CAMBIO %s: %s '%s' → '%s'" % (base_txt, campo, viejo, nuevo))

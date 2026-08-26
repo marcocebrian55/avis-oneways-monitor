@@ -183,7 +183,7 @@ def guardar_correo(base, servidor, puerto, usuario, clave, destinatarios,
     quien mantiene el sistema, no las oficinas.
 
     OJO, `avisos_fallo=None` significa "deja el que ya hubiera". Hace falta
-    porque el panel web y la ventana de Windows llaman aqui para guardar SOLO
+    porque la ventana de Windows llama aqui para guardar SOLO
     la lista de destinatarios, sin saber de este campo; con un "" por defecto
     lo borrarian sin querer cada vez que alguien toca la lista."""
     if avisos_fallo is None:
