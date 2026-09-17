@@ -25,10 +25,25 @@ INFORME_RESERVAS = RENTWAY + "/reports/reservations/2126"
 INFORME_ABIERTOS = RENTWAY + "/reports/rental%20agreements/2094"
 
 # Informes BASE: definen qué es oneway (llevan estación de salida Y de devolución).
+# El tercer campo dice si el informe se pide con la ventana hacia ATRAS.
+#
+# ABIERTOS VA HACIA ATRAS, y es la causa del "cuelgue nocturno" que se arrastro
+# del 25/08 al 17/09/2026. El intervalo de ese informe filtra por la FECHA DE
+# SALIDA DEL CONTRATO: pedido desde hoy a las 00:00 solo traia los contratos
+# abiertos HOY. De madrugada todavia no hay ninguno, Rentway contesta con un
+# cuadro "Sin resultados" en vez de ir a /result, y la pasada esperaba 180 s
+# dos veces a una pagina que no iba a llegar. Se vio en la captura de las 06:03
+# del 17/09. Medido ese dia: a las 08:01 el informe traia 3 contratos; pedido
+# desde 60 dias atras, 2.743 (todos abiertos) con 13 oneways en carretera que
+# el monitor no estaba viendo.
 INFORMES_BASE = [
-    ("reservas", "Reservas",  INFORME_RESERVAS),   # -> reservations_list_*.xlsx
-    ("abiertos", "Abiertos",  INFORME_ABIERTOS),   # -> open_*.xlsx
+    ("reservas", "Reservas",  INFORME_RESERVAS, False),   # -> reservations_list_*.xlsx
+    ("abiertos", "Abiertos",  INFORME_ABIERTOS, True),    # -> open_*.xlsx
 ]
+
+# Lo que devuelve _un_informe cuando Rentway dice "No se han encontrado
+# registros". No es una ruta: los lectores lo tratan como "sin fichero".
+SIN_RESULTADOS = "<sin resultados>"
 
 # Informes AMPLIADOS: no detectan oneways, los enriquecen.
 #  2119 -> vuelo, lugar de entrega, observaciones, extras, CDW/TP/PAI, franquicia
@@ -349,6 +364,33 @@ def _diagnostico(pg, etiqueta, base_app, log):
         log("  [%s] no pude sacar la captura: %s" % (etiqueta, str(e)[:100]))
 
 
+TEXTO_SIN_RESULTADOS = ("No se han encontrado registros", "No records found")
+
+
+def _esperar_resultado(pg, timeout_s=180):
+    """Tras "Generar informe": 'ok' si llega a /result, 'vacio' si Rentway
+    saca su cuadro "Informe | Sin resultados". Lanza si no pasa ninguna cosa.
+
+    Antes solo se esperaba a /result, y un informe vacio parecia un cuelgue de
+    3 minutos (ver la nota de INFORMES_BASE).
+    """
+    import time
+    t0 = time.time()
+    while time.time() - t0 < timeout_s:
+        if "/result" in pg.url:
+            return "ok"
+        for texto in TEXTO_SIN_RESULTADOS:
+            try:
+                loc = pg.get_by_text(texto)
+                if loc.count() and loc.first.is_visible():
+                    return "vacio"
+            except Exception:
+                pass
+        pg.wait_for_timeout(1000)
+    raise RuntimeError("Timeout %ds: Rentway no llevo a /result ni dijo que "
+                       "no hubiera resultados." % timeout_s)
+
+
 def _un_informe(pg, url, f_ini, f_fin, destino, etiqueta, log, esperar_login,
                credenciales=None, base_app=None):
     log("  [%s] abriendo informe..." % etiqueta)
@@ -363,7 +405,9 @@ def _un_informe(pg, url, f_ini, f_fin, destino, etiqueta, log, esperar_login,
     btn.click()
     log("  [%s] generando informe..." % etiqueta)
     try:
-        pg.wait_for_url("**/result", timeout=180000)
+        if _esperar_resultado(pg, timeout_s=180) == "vacio":
+            log("  [%s] Rentway dice: sin resultados en ese intervalo." % etiqueta)
+            return SIN_RESULTADOS
         pg.wait_for_timeout(4000)
 
         with pg.expect_download(timeout=180000) as di:
@@ -404,8 +448,8 @@ def descargar_informes(destino, dias=7, perfil=None, visible=False,
     # ventana ampliada hacia atrás para los informes de enriquecimiento
     x_ini = (hoy - datetime.timedelta(days=DIAS_ATRAS_EXTRA)).strftime("%d/%m/%Y") + ", 00:00"
     log("Rango solicitado: %s  ->  %s" % (f_ini, f_fin))
-    if ampliado:
-        log("Rango de los datos ampliados: %s  ->  %s" % (x_ini, f_fin))
+    log("Rango de Abiertos%s: %s  ->  %s"
+        % (" y datos ampliados" if ampliado else "", x_ini, f_fin))
 
     salidas = {}
     with sync_playwright() as p:
@@ -457,14 +501,16 @@ def descargar_informes(destino, dias=7, perfil=None, visible=False,
                     except Exception:
                         pass
 
-            for clave, etiqueta, url in INFORMES_BASE:
+            for clave, etiqueta, url, hacia_atras in INFORMES_BASE:
                 paso("Descargando: %s" % etiqueta)
                 # Los informes BASE se reintentan: un fallo puntual de red o un
-                # informe que tarda de mas no debe tirar la pasada entera.
+                # informe que tarda de mas no debe tirar la pasada entera. Un
+                # "sin resultados" NO se reintenta: es una respuesta, no un fallo.
                 salidas[clave] = None
+                desde = x_ini if hacia_atras else f_ini
                 for intento in (1, 2):
                     try:
-                        salidas[clave] = _un_informe(pg, url, f_ini, f_fin, destino,
+                        salidas[clave] = _un_informe(pg, url, desde, f_fin, destino,
                                                      etiqueta, log, esperar_login,
                                                      credenciales, base_app)
                         break
@@ -476,10 +522,23 @@ def descargar_informes(destino, dias=7, perfil=None, visible=False,
                             pg.wait_for_timeout(15000)
                 hecho += 1
                 paso("Descargado: %s" % etiqueta)
+            if salidas.get("reservas") == SIN_RESULTADOS:
+                # Una semana de reservas de toda la flota son miles de filas.
+                # Vacio no es una respuesta creible: seguir daria de baja todos
+                # los oneways de golpe y avisaria a las 32 personas.
+                raise RuntimeError("Rentway dice que no hay NINGUNA reserva en el "
+                                   "intervalo. No me lo creo: no analizo.")
             if not salidas.get("reservas"):
                 # sin el informe de reservas no hay nada que analizar
                 raise RuntimeError("No se pudo descargar el informe de reservas "
                                    "tras dos intentos.")
+            if salidas.get("abiertos") == SIN_RESULTADOS:
+                # Pedido desde 60 dias atras, cero contratos abiertos en toda la
+                # flota tampoco es creible. Se trata como si no hubiera bajado:
+                # asi la pasada conserva lo ultimo conocido y no da bajas.
+                log("  AVISO: Abiertos sin resultados desde %s. No es creible; "
+                    "lo trato como no descargado." % x_ini)
+                salidas["abiertos"] = None
             if not salidas.get("abiertos"):
                 log("  AVISO: sigo SIN el informe de Abiertos. Analizo solo con "
                     "reservas (los oneways de contratos no se veran esta vez).")
@@ -490,6 +549,8 @@ def descargar_informes(destino, dias=7, perfil=None, visible=False,
                         salidas[clave] = _un_informe(pg, url, x_ini, f_fin, destino,
                                                      etiqueta, log, esperar_login, credenciales,
                                                      base_app)
+                        if salidas[clave] == SIN_RESULTADOS:
+                            salidas[clave] = None     # vacio: nada con que enriquecer
                     except Exception as e:
                         salidas[clave] = None
                         log("  [%s] AVISO: no se pudo descargar (%s). Se continúa sin él."

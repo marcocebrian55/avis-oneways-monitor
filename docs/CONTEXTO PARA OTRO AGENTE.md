@@ -74,6 +74,30 @@ creas una entrada `CON-` aparte, un solo coche saliendo del mostrador produce
 dos avisos que se contradicen ("NUEVO ONEWAY" y "YA NO ES ONEWAY") y cuenta dos
 veces en el total de activos.
 
+**Un oneway recogido vive de su contrato.** El informe de reservas se pide desde
+hoy a las 00:00, así que al día siguiente de la recogida la reserva ya no sale.
+Por eso Abiertos se pide **desde 60 días atrás** (trae todos los contratos
+abiertos) y un contrato cuya reserva no se ve se guarda igualmente con la clave
+**`RES-<n.º de reserva>`**, no con `CON-`: si cambiara de clave a medianoche
+saldrían una baja y un nuevo falsos. `CON-` queda sólo para contratos sin
+reserva. El grupo de esos oneways sale del informe 2119 (que también mira 60
+días atrás) y, si falla, de la foto anterior (`conservar_conocidos`).
+
+**Que un oneway desaparezca no siempre es una baja.** `comparar()` sólo avisa si
+se ha anulado, si el contrato pasa a devolver en la misma oficina, o si
+desaparece una reserva cuya salida es hoy o después. Contrato cerrado, fecha de
+salida ya pasada o una anulada que sale de la ventana → nada, sólo log. La
+tabla completa está en `docs/OPERACION.md`.
+
+**Grupo antes que matrícula** (petición de las oficinas, 17/09/2026). La
+matrícula antes de la entrega es una pre-asignación que cambia sola: ni se
+muestra ni se avisa de sus cambios. Con contrato, sí. El "Grupo" de Abiertos es
+el del COCHE (`grupo_coche`), no el reservado; no lo mezcles con `grupo`.
+
+**Un campo nuevo en `CAMPOS_VIGILADOS` no puede avisar a todos.** `_difs()`
+ignora los campos que la foto anterior no tenía. Sin eso, añadir el grupo
+habría mandado un "CAMBIO" por cada oneway vivo en el primer despliegue.
+
 **El contrato manda sobre la reserva, pero solo con datos completos.** Si al
 recoger cambia la oficina de devolución a la de salida, deja de ser oneway y se
 da de baja. Pero si **falta** cualquiera de las dos oficinas no se decide nada:
@@ -142,10 +166,19 @@ Lo abierto está en la sección **PENDIENTE** de este documento y en el historia
 de commits, que es deliberadamente explicativo: cada mensaje cuenta *por qué*,
 no *qué*. `git log` es la mejor fuente de contexto que hay aquí.
 
-Lo más importante sin resolver: **el informe de Abiertos se cuelga de madrugada**
-(00:00–07:00) y funciona a partir de las 08:00. Solo ése; los otros cinco bajan
-siempre. Hay diagnóstico instrumentado: mira `/var/lib/oneways/diagnostico/*.png`
-y el resumen que llega a las 07:30.
+Hay **pruebas** en `tests/` (`python -m unittest discover -s tests -v`). Pásalas
+antes de cada despliegue; si cambias qué se avisa, añade la tuya. Y si el
+cambio hace visibles oneways que antes no se veían, la primera pasada tras el
+`git pull` va con `--desatendido --sin-avisos`.
+
+**Resuelto el 17/09/2026: el "cuelgue" nocturno de Abiertos.** No se colgaba:
+pedido desde hoy a las 00:00 no tenía contratos de madrugada y Rentway
+contestaba "Sin resultados". Ver la nota de `INFORMES_BASE` en
+`rentway_export.py`. Falta confirmar una noche limpia y retirar el resumen
+temporal de las 07:30 (órdenes en `docs/OPERACION.md`).
+
+Pendiente de fuera: preguntar a Jimpisoft si hay **API** con acceso a reservas y
+contratos. Sustituiría toda la descarga con navegador.
 
 ## Cómo se escribe aquí
 

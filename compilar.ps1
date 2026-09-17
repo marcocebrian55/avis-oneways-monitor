@@ -13,6 +13,9 @@ $assets = Join-Path $raiz "src\assets"
 # resource() no lo encuentra en un --onefile y el reparto por islas se cae
 # al lado seguro: todos reciben todo. No da error, solo correos de mas.
 $islas  = Join-Path $raiz "src\oficinas_islas.json"
+# Igual con la tabla de grupos (SC -> Economic 4): sin ella los avisos solo
+# llevan el codigo del grupo.
+$grupos = Join-Path $raiz "src\grupos.json"
 $icono  = Join-Path $assets "avis.ico"
 
 Write-Host "Compilando desde $raiz"
@@ -29,6 +32,7 @@ $ErrorActionPreference = 'Continue'
     --icon $icono `
     --add-data "$assets;assets" `
     --add-data "$islas;." `
+    --add-data "$grupos;." `
     --collect-all playwright `
     --hidden-import rentway_export `
     --paths src `

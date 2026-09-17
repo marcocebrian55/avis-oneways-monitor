@@ -53,18 +53,57 @@ def _esc(s):
     return (str(s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
 
 
+def grupo_txt(r):
+    """'grupo <b>SC</b> (Economic 4)', o '' si no se conoce.
+
+    El grupo va DELANTE de la matricula por peticion de las oficinas
+    (17/09/2026): con el grupo preparan el coche; la matricula concreta solo
+    importa cuando ya se ha entregado."""
+    g = (r.get("grupo") or "").strip()
+    if not g:
+        return ""
+    d = (r.get("grupo_desc") or "").strip()
+    return "grupo <b>%s</b>%s" % (_esc(g), " (%s)" % _esc(d) if d else "")
+
+
+def matricula_txt(r):
+    """La matricula SOLO si ya hay contrato, es decir, si el coche se ha
+    entregado. Antes de eso es una pre-asignacion que cambia sola y confunde."""
+    m = (r.get("matricula") or "").strip()
+    if not r.get("contrato") or not m:
+        return ""
+    t = "matrícula <b>%s</b>" % _esc(m)
+    gc = (r.get("grupo_coche") or "").strip()
+    if gc and gc != (r.get("grupo") or "").strip():
+        t += " (coche de grupo %s)" % _esc(gc)
+    return t
+
+
+def cabecera(r, ruta_negrita=False):
+    """Linea que identifica un oneway, compartida por Telegram y correo."""
+    ruta = "%s → %s" % (_esc(r.get("salida")), _esc(r.get("devolucion")))
+    partes = ["%s %s" % (_esc(r.get("tipo")), _esc(r.get("num"))),
+              grupo_txt(r),
+              "<b>%s</b>" % ruta if ruta_negrita else ruta,
+              matricula_txt(r)]
+    return " · ".join(p for p in partes if p)
+
+
+def titulo_baja(c):
+    if c.get("motivo") == "ANULADO":
+        return "ONEWAY ANULADO"
+    if c.get("motivo") == "MISMA_OFICINA":
+        return "YA NO ES ONEWAY — se devuelve en la misma oficina"
+    return "YA NO ES ONEWAY"
+
+
 def texto_cambios(cambios, activos, referencia):
     """Compone el aviso a partir de los cambios detectados."""
     L = ["<b>AVIS · Oneways</b>"]
     nuevos = [c for c in cambios if c["tipo"] == "NUEVO"]
-    fuera = [c for c in cambios if c["tipo"] == "DESAPARECIDO"]
+    fuera = [c for c in cambios if c["tipo"] in ("DESAPARECIDO", "ANULADO")]
     curso = [c for c in cambios if c["tipo"] == "EN_CURSO"]
     camb = [c for c in cambios if c["tipo"] == "CAMBIO"]
-
-    def cabecera(r):
-        return "%s %s · <b>%s</b> · %s→%s" % (
-            _esc(r["tipo"]), _esc(r["num"]), _esc(r["matricula"] or "sin matrícula"),
-            _esc(r["salida"]), _esc(r["devolucion"]))
 
     for c in nuevos:
         r = c["reg"]
@@ -83,9 +122,11 @@ def texto_cambios(cambios, activos, referencia):
     for c in fuera:
         r = c["reg"]
         L.append("")
-        L.append("❌ <b>%s</b>" % ("ONEWAY ANULADO" if c.get("motivo") == "ANULADO"
-                                  else "YA NO ES ONEWAY"))
+        L.append("❌ <b>%s</b>" % ("ONEWAY ANULADO" if c["tipo"] == "ANULADO"
+                                  else titulo_baja(c)))
         L.append("   " + cabecera(r))
+        if c["tipo"] == "ANULADO" and r.get("estado"):
+            L.append("   %s · salía %s" % (_esc(r["estado"]), _esc(r.get("fecha_salida"))))
 
     for c in curso:
         r = c["reg"]

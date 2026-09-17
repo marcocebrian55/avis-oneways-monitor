@@ -26,7 +26,7 @@ except Exception:                  # pragma: no cover - depende del sistema
     tk = ttk = filedialog = messagebox = None
     HAY_TK = False
 
-VERSION = "2.2.0"
+VERSION = "2.3.0"
 # URL del manifiesto de actualizaciones. Hoy apunta a la carpeta de OneDrive
 # compartida; el dia que se publique en GitHub Releases solo cambia esta linea
 # (o el fichero 'actualizacion.txt' que se pone al lado del .exe).
@@ -72,9 +72,17 @@ def _leer_hoja(path, hdr_row=5):
 
 
 def _col(idx, r, *nombres):
+    # Primero el nombre EXACTO y solo despues "que lo contenga". Con el grupo
+    # hacia falta: en Abiertos "Grupo" existe tal cual, pero en Reservas hay
+    # "Grupo solicitado" e "ID de grupo", y buscando por trozos se cogeria la
+    # primera que aparezca por orden de columnas, que no es un criterio.
     for name in nombres:
         for k in idx:
-            if k and name.lower() in k.lower():
+            if k and name.strip().lower() == str(k).strip().lower():
+                return r[idx[k]]
+    for name in nombres:
+        for k in idx:
+            if k and name.lower() in str(k).lower():
                 return r[idx[k]]
     return None
 
@@ -102,7 +110,15 @@ def _matricula(v):
     return s
 
 
-def leer_oneways(reservas_path, abiertos_path):
+def leer_oneways(reservas_path, abiertos_path, no_oneway=None):
+    """Lee los dos informes base y devuelve {clave: oneway}.
+
+    `no_oneway`, si se pasa un set, recoge las claves cuyo CONTRATO dice que se
+    devuelve en la misma oficina de la que salio. Hace falta para distinguir,
+    cuando un oneway desaparece, "le han cambiado la devolucion" (se avisa) de
+    "el contrato se ha cerrado" (no se avisa): en los dos casos la clave
+    simplemente deja de estar.
+    """
     ow = {}
     if reservas_path and os.path.exists(reservas_path):
         idx, data = _leer_hoja(reservas_path)
@@ -118,6 +134,12 @@ def leer_oneways(reservas_path, abiertos_path):
             ow["RES-" + num] = {
                 "tipo": "Reserva", "num": num,
                 "matricula": _matricula(_col(idx, r, "Número de matrícula", "Numero de matricula")),
+                # GRUPO RESERVADO (pedido por las oficinas el 17/09/2026: "es
+                # mas importante el grupo que la matricula"). "ID de grupo" es el
+                # grupo que tiene la reserva; "Grupo solicitado" el que pidio el
+                # cliente. Coinciden en 2.914 de 2.922 reservas (medido ese dia).
+                "grupo": _norm(_col(idx, r, "ID de grupo")),
+                "grupo_solicitado": _norm(_col(idx, r, "Grupo solicitado")),
                 "salida": sal_id, "devolucion": dev_id,
                 "fecha_salida": _fecha(_col(idx, r, "Fecha de salida")),
                 "fecha_llegada": _fecha(_col(idx, r, "Fecha llegada", "Fecha de llegada")),
@@ -154,10 +176,17 @@ def leer_oneways(reservas_path, abiertos_path):
                 # baja, que es exactamente lo que ha pasado.
                 if clave_res and clave_res in ow:
                     del ow[clave_res]
+                if no_oneway is not None:
+                    no_oneway.add(clave_res or ("CON-" + num))
                 continue
 
             datos = {
                 "matricula": _matricula(_col(idx2, r, "Número de matrícula", "Numero de matricula")),
+                # El "Grupo" de Abiertos es el del COCHE entregado, no el
+                # reservado: medido el 17/09/2026, coches de grupo SC salen
+                # cobrados como Mini, Economic 1 o Economic 4. Por eso va en un
+                # campo aparte y no pisa "grupo".
+                "grupo_coche": _norm(_col(idx2, r, "Grupo")),
                 "salida": sal_id, "devolucion": dev_id,
                 "fecha_salida": _fecha(_col(idx2, r, "Fecha de salida")),
                 "fecha_llegada": _fecha(_col(idx2, r, "Fecha de regreso", "Fecha de retorno")),
@@ -181,14 +210,57 @@ def leer_oneways(reservas_path, abiertos_path):
                 # adivinar cuales eran, y adivinar mal significa avisar de un
                 # cambio que no ha existido.
                 ow[clave_res]["_de_contrato"] = puestos
+            elif clave_res:
+                # Contrato con reserva que HOY no esta entre los oneways: o su
+                # reserva no era oneway (le cambiaron la devolucion al recoger) o
+                # ya salio de la ventana de fechas del informe de reservas, que es
+                # lo normal a partir del dia siguiente a la recogida.
+                #
+                # Se guarda con la clave de la RESERVA, no con CON-. Si no, el
+                # mismo coche cambiaria de clave a medianoche (RES-900 ayer,
+                # CON-590 hoy) y eso son dos avisos falsos: una baja y un nuevo.
+                ow[clave_res] = dict(datos, tipo="Reserva", num=num_res,
+                                     _de_contrato=list(datos))
             else:
-                # Contrato sin reserva a la vista: o su reserva no era oneway (le
-                # cambiaron la oficina de devolucion al recoger) o quedo fuera de
-                # la ventana de fechas. En ambos casos hay un coche cruzando islas
-                # que hay que vigilar igual.
+                # Contrato sin reserva (alquiler de mostrador): hay un coche
+                # cruzando islas que hay que vigilar igual.
                 ow["CON-" + num] = dict(datos, tipo="Contrato", num=num,
                                         _de_contrato=list(datos))
     return ow
+
+
+def inicio_ventana(ahora=None):
+    """Primer instante que cubre el informe de reservas: hoy a las 00:00.
+
+    Tiene que cuadrar con `rentway_export.descargar_informes`, que pide las
+    reservas desde hoy a las 00:00. Lo que salio antes ya no aparece en ese
+    informe, y que no aparezca NO significa que haya dejado de ser oneway.
+    """
+    ahora = ahora or datetime.datetime.now()
+    return ahora.replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def _antes_de(fecha_txt, instante):
+    """¿La fecha 'DD/MM/YYYY HH:MM' de un oneway es anterior al instante?
+    Una fecha que no se entiende NO es anterior: ante la duda no se decide."""
+    try:
+        return datetime.datetime.strptime(str(fecha_txt), "%d/%m/%Y %H:%M") < instante
+    except Exception:
+        return False
+
+
+def conservar_conocidos(ow, ayer, campos=("grupo", "grupo_solicitado")):
+    """Un grupo que hoy llega VACIO se toma de la pasada anterior.
+
+    Los oneways que solo se ven por su contrato sacan el grupo del informe
+    ampliado de reservas (2119), que es opcional y puede fallar. Sin esto, cada
+    fallo de ese informe seria un aviso "grupo: SC -> (vacio)" a las oficinas.
+    """
+    for clave, reg in ow.items():
+        previo = (ayer or {}).get(clave) or {}
+        for c in campos:
+            if not reg.get(c) and previo.get(c):
+                reg[c] = previo[c]
 
 
 def arrastrar_contratos(ow, ayer, log=None):
@@ -212,16 +284,22 @@ def arrastrar_contratos(ow, ayer, log=None):
     """
     if not ayer:
         return 0
+    inicio = inicio_ventana()
     arrastrados = 0
     for clave, previo in ayer.items():
         campos = previo.get("_de_contrato")
         if not campos:
             continue                      # nunca tuvo contrato: nada que arrastrar
-        if clave.startswith("CON-"):
-            if clave not in ow:           # contrato suelto que hoy no se ve
+        if clave not in ow:
+            # Hoy no se ve. Solo se recupera si su reserva NO PODIA verse: el
+            # coche salio antes de hoy y la reserva ya no entra en la ventana del
+            # informe de reservas (desde el 17/09/2026 esos oneways se sostienen
+            # solo por su contrato). Si salio hoy, la reserva deberia estar; si
+            # no esta es que la han quitado, y eso no se tapa.
+            if clave.startswith("CON-") or _antes_de(previo.get("fecha_salida"), inicio):
                 ow[clave] = dict(previo)
                 arrastrados += 1
-        elif clave in ow:                 # reserva ya recogida: devolverle lo suyo
+        else:                             # reserva ya recogida: devolverle lo suyo
             for campo in campos:
                 if previo.get(campo) not in (None, ""):
                     ow[clave][campo] = previo[campo]
@@ -256,6 +334,11 @@ def leer_detalle(path):
             "pai": _norm(_col(idx, r, "PAI")),
             "franquicia": _norm(_col(idx, r, "Franquicia")),
             "conductor_adicional": _norm(_col(idx, r, "Conductor adicional")),
+            # De aqui sale el grupo de los oneways que ya no estan en el
+            # informe de reservas (ver enriquecer): este informe mira 60 dias
+            # hacia atras, el de reservas solo desde hoy.
+            "grupo": _norm(_col(idx, r, "ID de grupo")),
+            "grupo_solicitado": _norm(_col(idx, r, "Grupo solicitado")),
         }
     return out
 
@@ -309,14 +392,46 @@ def enriquecer(ow, fich):
         for c in CAMPOS_EXTRA:
             reg.setdefault(c, "")
         if clave.startswith("RES-"):
-            reg.update(detalle.get(reg["num"], {}))
+            extra = dict(detalle.get(clave[4:], {}))
+            # El grupo del informe de reservas manda; el del detalle solo
+            # rellena huecos (oneways que se ven solo por su contrato).
+            for c in ("grupo", "grupo_solicitado"):
+                v = extra.pop(c, "")
+                if v and not reg.get(c):
+                    reg[c] = v
+            reg.update(extra)
         reg.update(contactos.get(clave, {}))
     return ow
 
 
+_MAPA_GRUPOS = None
+
+
+def descripcion_grupo(codigo):
+    """'SC' -> 'Economic 4'. Tabla en grupos.json, sacada del informe 2162 de
+    Rentway (ID de grupo <-> Tarifa, sin una sola contradiccion en 3.000
+    reservas). Un grupo que no este devuelve '': se muestra solo el codigo."""
+    global _MAPA_GRUPOS
+    if _MAPA_GRUPOS is None:
+        try:
+            with open(resource("grupos.json"), encoding="utf-8") as f:
+                _MAPA_GRUPOS = json.load(f)
+        except Exception:
+            _MAPA_GRUPOS = {}
+    return _MAPA_GRUPOS.get(str(codigo or "").strip(), "")
+
+
 # Solo estos campos disparan aviso de CAMBIO. Los de CAMPOS_EXTRA quedan fuera
 # a propósito: son contexto, y cambian solos (p.ej. se rellena el vuelo).
-CAMPOS_VIGILADOS = ["matricula", "salida", "devolucion", "fecha_salida", "fecha_llegada", "estado", "activo"]
+CAMPOS_VIGILADOS = ["grupo", "matricula", "salida", "devolucion", "fecha_salida",
+                    "fecha_llegada", "estado", "activo"]
+
+
+def completar_grupos(ow):
+    """Pone la descripcion del grupo reservado ('SC' -> 'Economic 4')."""
+    for reg in ow.values():
+        reg["grupo_desc"] = descripcion_grupo(reg.get("grupo"))
+    return ow
 
 
 def _recogido(antes, ahora):
@@ -335,29 +450,95 @@ def _recogido(antes, ahora):
             and "with ra" in str(ahora.get("estado") or "").lower())
 
 
-def comparar(hoy, ayer, anulados=None):
+def _difs(antes, ahora):
+    """Campos vigilados que han cambiado de verdad."""
+    difs = []
+    for c in CAMPOS_VIGILADOS:
+        if c not in antes:
+            # La foto anterior no tenia ese campo (se añadio al programa
+            # despues, como el grupo el 17/09/2026). No es un cambio: sin esta
+            # regla, el primer despliegue avisaria de TODOS los oneways vivos.
+            continue
+        viejo, nuevo = antes.get(c), ahora.get(c)
+        if str(viejo) == str(nuevo):
+            continue
+        if c == "matricula" and not ahora.get("contrato"):
+            # Antes de la entrega la matricula es una PRE-asignacion y cambia
+            # sola (medido: 8 avisos "matricula: '' -> 5008NFG" sin que nadie
+            # hubiera recogido nada). A las oficinas les importa cuando ya hay
+            # contrato, y entonces sale en el aviso de EN CURSO.
+            continue
+        difs.append((c, viejo, nuevo))
+    return difs
+
+
+def comparar(hoy, ayer, anulados=None, no_oneway=None, inicio=None, log=None):
+    """Lista de cambios QUE HAY QUE AVISAR entre dos fotos.
+
+    Lo que cambia pero no merece aviso se deja en el log (si se pasa `log`) y
+    no se devuelve. Repasando las 321 fotos del 24/08 al 17/09/2026, 65 de los
+    avisos enviados eran de ese tipo; estas reglas son las que los separan.
+    """
     anulados = anulados or {}
+    no_oneway = no_oneway or set()
+    inicio = inicio or inicio_ventana()
+    log = log or (lambda m: None)
     cambios = []
     for clave, reg in hoy.items():
         if clave not in ayer:
+            if not reg.get("activo"):
+                # Una reserva YA ANULADA que entra en la ventana de 7 dias. Se
+                # anunciaba como "NUEVO ONEWAY" un coche que no va a salir
+                # (5 veces entre el 07 y el 12/09/2026).
+                log("  (sin aviso) %s aparece ya anulada: %s" % (clave, reg.get("estado")))
+                continue
             cambios.append({"tipo": "NUEVO", "reg": reg, "difs": [], "motivo": ""})
+            continue
+        antes = ayer[clave]
+        difs = _difs(antes, reg)
+        if not difs:
+            continue
+        if antes.get("activo") and not reg.get("activo"):
+            # Anulada o eliminada. Llegaba como "estado: Confirmed -> Canceled
+            # by Operator / activo: True -> False", que hay que saber leer.
+            tipo = "ANULADO"
+        elif _recogido(antes, reg):
+            # La recogida se cuenta aparte de un CAMBIO cualquiera: es el
+            # momento en que el coche SALE, y en un oneway eso es justo lo
+            # que le importa a la oficina de destino. Antes llegaba como
+            # "estado: Confirmed -> Confirmed with RA", que no le dice
+            # absolutamente nada a nadie en un mostrador.
+            tipo = "EN_CURSO"
         else:
-            difs = [(c, ayer[clave].get(c), reg.get(c)) for c in CAMPOS_VIGILADOS
-                    if str(ayer[clave].get(c)) != str(reg.get(c))]
-            if difs:
-                # La recogida se cuenta aparte de un CAMBIO cualquiera: es el
-                # momento en que el coche SALE, y en un oneway eso es justo lo
-                # que le importa a la oficina de destino. Antes llegaba como
-                # "estado: Confirmed -> Confirmed with RA", que no le dice
-                # absolutamente nada a nadie en un mostrador.
-                tipo = "EN_CURSO" if _recogido(ayer[clave], reg) else "CAMBIO"
-                cambios.append({"tipo": tipo, "reg": reg, "difs": difs, "motivo": ""})
+            tipo = "CAMBIO"
+        cambios.append({"tipo": tipo, "reg": reg, "difs": difs, "motivo": ""})
+
     for clave, reg in ayer.items():
-        if clave not in hoy:
-            motivo = ""
-            if clave.startswith("CON-") and reg.get("num") in anulados:
-                motivo = "ANULADO"
-            cambios.append({"tipo": "DESAPARECIDO", "reg": reg, "difs": [], "motivo": motivo})
+        if clave in hoy:
+            continue
+        contrato = reg.get("contrato") or (reg.get("num") if clave.startswith("CON-") else "")
+        if contrato and contrato in anulados:
+            cambios.append({"tipo": "DESAPARECIDO", "reg": reg, "difs": [], "motivo": "ANULADO"})
+        elif clave in no_oneway:
+            # El contrato dice ahora que se devuelve donde salio.
+            cambios.append({"tipo": "DESAPARECIDO", "reg": reg, "difs": [], "motivo": "MISMA_OFICINA"})
+        elif not reg.get("activo"):
+            # Ya se aviso de la anulacion cuando ocurrio; ahora solo sale de
+            # la ventana de fechas (12 avisos repetidos hasta el 17/09/2026).
+            log("  (sin aviso) %s anulada sale de la ventana" % clave)
+        elif reg.get("contrato"):
+            # El informe de Abiertos (pedido desde 60 dias atras) ya no trae su
+            # contrato: se ha cerrado, el coche esta devuelto. Si Abiertos no
+            # hubiera bajado, arrastrar_contratos lo habria conservado.
+            log("  (sin aviso) %s terminado: contrato %s cerrado" % (clave, reg.get("contrato")))
+        elif _antes_de(reg.get("fecha_salida"), inicio):
+            # Su fecha de salida ya paso y la reserva salio de la ventana del
+            # informe. Es LA trampa de medianoche: la Reserva 900 se anuncio
+            # como "YA NO ES ONEWAY" a 28 personas el 26/08/2026 a las 00:08.
+            log("  (sin aviso) %s sale de la ventana de fechas (salida %s)"
+                % (clave, reg.get("fecha_salida")))
+        else:
+            cambios.append({"tipo": "DESAPARECIDO", "reg": reg, "difs": [], "motivo": ""})
     return cambios
 
 
@@ -420,6 +601,56 @@ PATRONES_EXCEL = {
     "contacto_res": "reservation_information_*.xlsx",        # 2162 (ampliado)
     "contacto_con": "rental_agreements_information_*.xlsx",  # 2163 (ampliado)
 }
+
+
+# Columnas de las que VIVE el programa, tal como las escribe Rentway v5.26
+# (comprobadas el 17/09/2026). Si una desaparece o cambia de nombre hay que
+# enterarse ESE DIA. Paso de verdad: "ID de la oficina" se renombro a "Oficina
+# de salida" en Abiertos y el lado de contratos estuvo semanas descartando todas
+# las filas sin decir nada, porque descartar filas en silencio es
+# indistinguible de que no haya filas.
+COLUMNAS_ESPERADAS = {
+    "reservas": ["N.º Reserva", "ID de estación de salida", "ID de estación de devolucion",
+                 "Número de matrícula", "Fecha de salida", "Fecha llegada", "Estado",
+                 "Eliminado", "Nombre del cliente", "ID de grupo", "Grupo solicitado"],
+    "abiertos": ["N.º Contrato", "N.º Reserva", "Número de matrícula", "Grupo",
+                 "Nombre del cliente", "Fecha de salida", "Oficina de salida",
+                 "Fecha de regreso", "Oficina de devolución"],
+    "detalle": ["N.º Reserva", "Vuelo salida", "Lugar de entrega", "Observaciones",
+                "ID de grupo", "Grupo solicitado"],
+    "anulados": ["Contrato de alquiler", "Fecha de salida"],
+    "contacto_res": ["N.º Reserva", "Correo electrónico del cliente", "Teléfono del cliente",
+                     "Correo electrónico del conductor", "Teléfono del conductor"],
+    "contacto_con": ["Contrato de alquiler", "Correo electrónico del cliente",
+                     "Teléfono del cliente", "Correo electrónico del conductor",
+                     "Teléfono del conductor"],
+}
+
+
+def comprobar_formato(fich):
+    """Devuelve una lista de problemas de formato ('' si todo cuadra).
+
+    Compara por nombre EXACTO (sin mayusculas ni espacios de sobra): un
+    renombrado es justo lo que hay que cazar, aunque _col lo tolerase.
+    """
+    problemas = []
+    for clave, esperadas in COLUMNAS_ESPERADAS.items():
+        ruta = (fich or {}).get(clave)
+        if not ruta or not os.path.exists(ruta):
+            continue                     # no bajado: eso se avisa por otro lado
+        try:
+            wb = openpyxl.load_workbook(ruta, read_only=True, data_only=True)
+            cab = next(wb.active.iter_rows(min_row=5, max_row=5, values_only=True), ())
+            wb.close()
+        except Exception as e:
+            problemas.append("%s: no se pudo leer (%s)" % (clave, str(e)[:80]))
+            continue
+        hay = {str(c).strip().lower() for c in cab if c not in (None, "")}
+        faltan = [c for c in esperadas if c.strip().lower() not in hay]
+        if faltan:
+            problemas.append("%s (%s): faltan %s" % (clave, os.path.basename(ruta),
+                                                    ", ".join(faltan)))
+    return problemas
 
 
 def encontrar_excels(carpeta):
@@ -531,7 +762,7 @@ class App:
         self.lbl_cuenta.pack(side="left", padx=8)
         tk.Frame(f1, bg="#E3E3E6", height=1).pack(fill="x", pady=(4, 6))
 
-        cols = ("tipo", "num", "matricula", "ruta", "salida_f", "llegada_f", "estado",
+        cols = ("tipo", "num", "grupo", "matricula", "ruta", "salida_f", "llegada_f", "estado",
                 "cliente", "vuelo", "contacto")
         marco_tv = tk.Frame(f1, bg="white")
         marco_tv.pack(fill="both", expand=True)
@@ -539,7 +770,8 @@ class App:
                                style="Avis.Treeview")
         scr = ttk.Scrollbar(marco_tv, orient="vertical", command=self.tv.yview)
         self.tv.configure(yscrollcommand=scr.set)
-        for c, txt, w in [("tipo", "Tipo", 70), ("num", "Nº", 55), ("matricula", "Matrícula", 90),
+        for c, txt, w in [("tipo", "Tipo", 70), ("num", "Nº", 55), ("grupo", "Grupo", 60),
+                          ("matricula", "Matrícula", 90),
                           ("ruta", "Ruta", 110), ("salida_f", "Salida", 125),
                           ("llegada_f", "Llegada", 125), ("estado", "Estado", 110),
                           ("cliente", "Cliente", 150), ("vuelo", "Vuelo", 70),
@@ -993,6 +1225,7 @@ class App:
         try:
             ow = leer_oneways(res, abi)
             enriquecer(ow, fich)
+            completar_grupos(ow)
             anulados = leer_anulados(fich.get("anulados"))
         except Exception as e:
             messagebox.showerror("Error", "No pude leer los Excels: " + str(e))
@@ -1009,7 +1242,8 @@ class App:
         for i, r in enumerate(sorted(activos, key=lambda x: x["fecha_salida"])):
             tel = r.get("telefono") or r.get("telefono_conductor") or ""
             self.tv.insert("", "end", tags=("par",) if i % 2 else (),
-                           values=(r["tipo"], r["num"], r["matricula"] or "—",
+                           values=(r["tipo"], r["num"], r.get("grupo") or "—",
+                                   (r["matricula"] if r.get("contrato") else "") or "—",
                                    f"{r['salida']} → {r['devolucion']}", r["fecha_salida"],
                                    r["fecha_llegada"], r["estado"], r["cliente"],
                                    r.get("vuelo") or "—", tel or "—"))
@@ -1027,12 +1261,14 @@ class App:
             self.txt.insert("end", f"Comparando con {fecha_ayer} — {len(cambios)} cambio(s):\n\n")
             for c in cambios:
                 r = c["reg"]
-                base = f"{r['tipo']} {r['num']} ({r['matricula'] or 's/m'}, {r['salida']}→{r['devolucion']})"
+                base = f"{r['tipo']} {r['num']} (grupo {r.get('grupo') or '?'}, {r['salida']}→{r['devolucion']})"
                 if c["tipo"] == "NUEVO":
                     self.txt.insert("end", f"● NUEVO ONEWAY: {base} salida {r['fecha_salida']} | {r['estado']}\n", "NUEVO")
                     detalle = self._detalle(r)
                     if detalle:
                         self.txt.insert("end", "     " + detalle + "\n")
+                elif c["tipo"] == "ANULADO":
+                    self.txt.insert("end", f"● ONEWAY ANULADO: {base} | {r['estado']}\n", "DESAP")
                 elif c["tipo"] == "DESAPARECIDO":
                     if c.get("motivo") == "ANULADO":
                         self.txt.insert("end", f"● ONEWAY ANULADO: {base}\n", "DESAP")
@@ -1194,12 +1430,17 @@ def _asunto_cambios(cambios):
     """Resume los cambios en una linea. El asunto es lo unico que mucha gente
     va a leer, asi que dice QUE ha pasado y no solo que ha pasado algo."""
     n = len([c for c in cambios if c.get("tipo") == "NUEVO"])
-    f = len([c for c in cambios if c.get("tipo") == "DESAPARECIDO"])
+    a = len([c for c in cambios if c.get("tipo") == "ANULADO"
+             or (c.get("tipo") == "DESAPARECIDO" and c.get("motivo") == "ANULADO")])
+    f = len([c for c in cambios if c.get("tipo") == "DESAPARECIDO"
+             and c.get("motivo") != "ANULADO"])
     m = len([c for c in cambios if c.get("tipo") == "CAMBIO"])
     e = len([c for c in cambios if c.get("tipo") == "EN_CURSO"])
     partes = []
     if n:
         partes.append("%d oneway%s NUEVO%s" % (n, "s" if n > 1 else "", "S" if n > 1 else ""))
+    if a:
+        partes.append("%d anulado%s" % (a, "s" if a > 1 else ""))
     if f:
         partes.append("%d baja%s" % (f, "s" if f > 1 else ""))
     if e:
@@ -1330,11 +1571,17 @@ def avisar_telegram(cambios, activos, referencia, base=None):
 
 
 # ==================== LA PASADA (tarea programada y /revisar) ====================
-def ejecutar_pasada(dias=7, ampliado=True, quien="tarea"):
+def ejecutar_pasada(dias=7, ampliado=True, quien="tarea", avisar=True):
     """Descarga, analiza, compara y avisa. Sin ventana.
 
     Lo comparten la Tarea Programada y el comando /revisar de Telegram, para que
-    los dos hagan EXACTAMENTE lo mismo. Devuelve un dict con el resultado:
+    los dos hagan EXACTAMENTE lo mismo.
+
+    `avisar=False` (--sin-avisos) hace la pasada entera y guarda la foto, pero
+    no manda nada a nadie: solo escribe en el log lo que HABRIA avisado. Es para
+    desplegar un cambio que amplia lo que se ve (el 17/09/2026, 13 oneways en
+    carretera que antes no se veian) sin que las oficinas reciban de golpe
+    "nuevos" que no lo son. Devuelve un dict con el resultado:
       {"estado": "ok", "cambios": [...], "activos": [...], "referencia": "..."}
       {"estado": "error", "error": "..."}
       {"estado": "otro_equipo"|"ocupado", "otra": {...}}
@@ -1342,7 +1589,8 @@ def ejecutar_pasada(dias=7, ampliado=True, quien="tarea"):
     import instancia, credenciales
     base = app_dir()
     carpeta_señal = instancia.carpeta_por_defecto(base)
-    registrar("=== PASADA [%s] (dias=%d, ampliado=%s) ===" % (quien, dias, ampliado))
+    registrar("=== PASADA [%s] (dias=%d, ampliado=%s%s) ==="
+              % (quien, dias, ampliado, "" if avisar else ", SIN AVISOS"))
     registrar("Señal de instancia en: %s" % carpeta_señal)
 
     otra = instancia.otra_instancia(carpeta_señal)
@@ -1382,15 +1630,25 @@ def ejecutar_pasada(dias=7, ampliado=True, quien="tarea"):
             log=registrar, base_app=base, ampliado=ampliado,
             credenciales=(usuario, clave) if usuario else None)
 
-        fich = encontrar_excels(carpeta)
         ayer, fecha_ayer = cargar_snapshot_anterior()
 
-        # OJO: se usa lo que se ha bajado EN ESTA PASADA (`bajados`), no lo que
-        # haya en Downloads. encontrar_excels() coge el fichero mas reciente que
-        # encuentre, asi que cuando Abiertos falla devuelve el de una pasada
-        # anterior sin decir nada, y los contratos se leen de datos viejos.
-        abiertos_hoy = (bajados or {}).get("abiertos")
-        ow = leer_oneways(fich.get("reservas"), abiertos_hoy)
+        # OJO: se usa SOLO lo que se ha bajado EN ESTA PASADA (`bajados`), no lo
+        # que haya en Downloads. encontrar_excels() coge el fichero mas reciente
+        # que encuentre, asi que cuando un informe falla devuelve el de una
+        # pasada anterior sin decir nada. Hasta el 17/09/2026 esto se cuidaba
+        # solo con Abiertos; los ampliados seguian leyendose de Downloads.
+        fich = {k: (bajados or {}).get(k) for k in PATRONES_EXCEL}
+
+        problemas = comprobar_formato(fich)
+        if problemas:
+            registrar("FORMATO DE INFORME CAMBIADO: " + " | ".join(problemas))
+            avisar_fallo("Rentway ha cambiado el formato de algun informe y puede "
+                         "que se esten perdiendo oneways sin decir nada. "
+                         + " | ".join(problemas), base)
+
+        abiertos_hoy = fich.get("abiertos")
+        no_oneway = set()
+        ow = leer_oneways(fich.get("reservas"), abiertos_hoy, no_oneway)
         if not abiertos_hoy:
             # Faltar este informe es un ERROR, no una linea de log: el
             # 25 y el 26/08/2026 se colgo en cinco pasadas seguidas (00:00 a
@@ -1402,25 +1660,34 @@ def ejecutar_pasada(dias=7, ampliado=True, quien="tarea"):
                 "oneways de reserva se vigilan con normalidad.",
                 base)
         enriquecer(ow, fich)
+        conservar_conocidos(ow, ayer)
+        completar_grupos(ow)
         anulados = leer_anulados(fich.get("anulados"))
         # OJO: 'if ayer' era un BUG. Un snapshot sin oneways es {} y en Python
         # eso es falso, asi que se saltaba la comparacion y el PRIMER oneway
         # tras un periodo sin ninguno no se avisaba nunca.
-        cambios = comparar(ow, ayer, anulados) if ayer is not None else []
+        cambios = (comparar(ow, ayer, anulados, no_oneway, log=registrar)
+                   if ayer is not None else [])
         guardar_snapshot(ow)
 
         activos = [r for r in ow.values() if r["activo"]]
         registrar("Oneways: %d (activos: %d) · Cambios vs %s: %d"
                   % (len(ow), len(activos), fecha_ayer or "(sin referencia)", len(cambios)))
-        avisar_telegram(cambios, activos, fecha_ayer, base)
-        avisar_correo(cambios, activos, fecha_ayer, base)
-        parte_diario(activos, base)
+        if avisar:
+            avisar_telegram(cambios, activos, fecha_ayer, base)
+            avisar_correo(cambios, activos, fecha_ayer, base)
+            parte_diario(activos, base)
+        elif cambios:
+            registrar("SIN AVISOS: no se envia nada de lo siguiente.")
         for c in cambios:
             r = c["reg"]
-            base_txt = "%s %s (%s, %s→%s)" % (r["tipo"], r["num"],
-                                              r["matricula"] or "s/m", r["salida"], r["devolucion"])
+            base_txt = "%s %s (grupo %s, %s, %s→%s)" % (
+                r["tipo"], r["num"], r.get("grupo") or "?",
+                r["matricula"] or "s/m", r["salida"], r["devolucion"])
             if c["tipo"] == "NUEVO":
                 registrar("  NUEVO ONEWAY: %s salida %s | %s" % (base_txt, r["fecha_salida"], r["estado"]))
+            elif c["tipo"] == "ANULADO":
+                registrar("  ONEWAY ANULADO: %s | %s" % (base_txt, r["estado"]))
             elif c["tipo"] == "DESAPARECIDO":
                 registrar("  %s: %s" % ("ONEWAY ANULADO" if c.get("motivo") == "ANULADO"
                                         else "YA NO ONEWAY", base_txt))
@@ -1459,10 +1726,10 @@ def ejecutar_pasada(dias=7, ampliado=True, quien="tarea"):
         bloqueo.__exit__()
 
 
-def modo_desatendido(dias=7, ampliado=True):
+def modo_desatendido(dias=7, ampliado=True, avisar=True):
     """Lo que ejecuta la Tarea Programada. Devuelve 0 si todo fue bien, 1 si
     hubo error y 2 si NO se ejecuto (otro equipo vigilando o pasada en curso)."""
-    r = ejecutar_pasada(dias, ampliado, "tarea")
+    r = ejecutar_pasada(dias, ampliado, "tarea", avisar=avisar)
     return {"ok": 0, "error": 1, "otro_equipo": 2, "ocupado": 2}[r["estado"]]
 
 
@@ -1822,10 +2089,7 @@ def parte_diario(activos, base=None):
             return False
         if activos:
             detalle = "\n".join(
-                "   · %s %s · %s → %s · sale %s"
-                % (avisos._esc(r["tipo"]), avisos._esc(r["num"]),
-                   avisos._esc(r["salida"]), avisos._esc(r["devolucion"]),
-                   avisos._esc(r["fecha_salida"]))
+                _linea_oneway(r)
                 for r in sorted(activos, key=lambda x: x["fecha_salida"])[:10])
             cuerpo = "Hay <b>%d oneway(s)</b> en los próximos días:\n%s" % (len(activos), detalle)
         else:
@@ -1909,11 +2173,7 @@ def _oneways_activos():
 
 def _linea_oneway(r):
     import avisos
-    return ("   · %s %s · <b>%s</b> · %s → %s · sale %s"
-            % (avisos._esc(r.get("tipo")), avisos._esc(r.get("num")),
-               avisos._esc(r.get("matricula") or "sin matrícula"),
-               avisos._esc(r.get("salida")), avisos._esc(r.get("devolucion")),
-               avisos._esc(r.get("fecha_salida"))))
+    return "   · %s · sale %s" % (avisos.cabecera(r), avisos._esc(r.get("fecha_salida")))
 
 
 def _texto_estado(base):
@@ -2116,7 +2376,8 @@ def main():
         sys.exit(0 if probar_correo(destino) else 1)
 
     if "--desatendido" in sys.argv:
-        sys.exit(modo_desatendido(dias, "--sin-ampliados" not in sys.argv))
+        sys.exit(modo_desatendido(dias, "--sin-ampliados" not in sys.argv,
+                                  avisar="--sin-avisos" not in sys.argv))
 
     if "--escucha" in sys.argv:
         sys.exit(modo_escucha(dias))

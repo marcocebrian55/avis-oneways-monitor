@@ -43,6 +43,27 @@ systemctl restart oneways-escucha.service
 La pasada no hace falta reiniciarla: cada una arranca un proceso nuevo y ya
 coge el código nuevo.
 
+**Antes de subir nada, las pruebas** (en `/tmp`, sin tocar el repo del servidor,
+o en cualquier equipo con Python y openpyxl):
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+Cada prueba es un aviso equivocado que ya llegó a las oficinas alguna vez.
+
+**Si el cambio amplía lo que se ve** (más oneways, una clave distinta), la
+primera pasada tras el `git pull` avisaría de golpe como "nuevos" de oneways
+que no lo son. Esa primera pasada se hace **sin avisos**: guarda la foto de
+referencia y sólo escribe en el log lo que habría mandado.
+
+```bash
+sudo -u oneways ONEWAYS_DATOS=/var/lib/oneways /opt/oneways/venv/bin/python \
+  /opt/oneways/repo/src/avis_monitor.py --desatendido --sin-avisos
+```
+
+Hazlo justo después de una pasada normal, para que no se cuele otra en medio.
+
 ## Cambiar la configuración
 
 ```bash
@@ -109,6 +130,38 @@ anulaciones y modificaciones.
   fallos ⚠️ con 6 h de cooldown.
 - **Correo**: los cambios, a la lista `destinatarios`. La mayoría **no está en
   Telegram**, y por eso el correo dejó de mandar sólo los oneways nuevos.
+
+### Qué es un aviso y qué no (desde la v2.3.0, 17/09/2026)
+
+| Pasa esto | Aviso |
+|---|---|
+| Aparece un oneway activo | 🆕 NUEVO |
+| Aparece una reserva **ya anulada** | nada |
+| Se anula o se elimina | ❌ ONEWAY ANULADO |
+| El cliente recoge el coche (hay contrato) | 🚗 EN CURSO, **con matrícula** |
+| Cambia grupo, oficinas, fechas o estado | ✏️ CAMBIO |
+| Cambia la matrícula **antes** de la entrega | nada (es una pre-asignación) |
+| Cambia la matrícula **con contrato** | ✏️ CAMBIO |
+| El contrato pasa a devolver en la misma oficina | ❌ YA NO ES ONEWAY — misma oficina |
+| Desaparece una reserva que sale hoy o después | ❌ YA NO ES ONEWAY |
+| Se cierra el contrato (coche devuelto) | nada |
+| La fecha de salida ya pasó y sale de la ventana | nada |
+| Una anulada sale de la ventana | nada (ya se avisó) |
+
+Lo que no se avisa queda en el log como `(sin aviso) ...`. Repasando las 321
+fotos del 24/08 al 17/09/2026: 193 avisos con las reglas viejas, 120 con éstas.
+
+**Grupo antes que matrícula.** Petición de las oficinas del 17/09/2026. Cada
+aviso lleva el **grupo reservado** (`ID de grupo` del informe de reservas) con
+su descripción (`src/grupos.json`, p.ej. `SC (Economic 4)`). La matrícula sólo
+aparece cuando ya hay contrato; si el coche entregado es de otro grupo, se dice
+(`coche de grupo SG`). Si aparece un grupo nuevo, el aviso sale con el código
+solo; para añadir la descripción: `herramientas/mapa_grupos.py`.
+
+**Rentway cambia un informe de formato → aviso de error.** En cada pasada se
+comprueba que están las columnas de las que vive el programa
+(`COLUMNAS_ESPERADAS` en `avis_monitor.py`). Si falta alguna, llega un aviso a
+`avisos_fallo` diciendo cuál.
 
 > **Desde el 25/08/2026 la lista son las 28 direcciones de las cuatro islas.**
 > Las 24 que estaban aparcadas en `_en_espera` se activaron ese día y se les
@@ -206,7 +259,15 @@ pasada a pasada del día: en cuáles bajó el informe de Abiertos y en cuáles n
 Lo manda `oneways-resumen.timer` → `src/resumen_abiertos.py`.
 
 Existe sólo para entender por qué ese informe se cuelga de madrugada. **Cuando
-se sepa, se quita** — no debe quedarse ahí para siempre:
+se sepa, se quita** — no debe quedarse ahí para siempre.
+
+> **Causa encontrada el 17/09/2026** (captura de las 06:03): no se colgaba.
+> El intervalo de Abiertos filtra por la **fecha de salida del contrato**, y se
+> pedía desde hoy a las 00:00. De madrugada aún no hay contratos de hoy, Rentway
+> saca un cuadro "Sin resultados" y la pasada esperaba 180 s dos veces a una
+> página que no iba a llegar. Desde la v2.3.0 Abiertos se pide **desde 60 días
+> atrás** (trae todos los contratos abiertos) y un "Sin resultados" se detecta
+> en segundos. Queda comprobar una noche entera sin fallos y quitar el resumen:
 
 ```bash
 systemctl disable --now oneways-resumen.timer

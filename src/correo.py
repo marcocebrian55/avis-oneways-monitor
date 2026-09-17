@@ -138,11 +138,12 @@ def cuerpo_fallo(mensaje, cuando=None, servidor=None):
 
 def cuerpo_cambios(cambios, activos, referencia):
     """Mismo contenido que el aviso de Telegram, en HTML para correo."""
+    import avisos
+
     def ficha(r):
-        return ("<b>%s %s</b> · %s · <b>%s → %s</b>"
-                % (_esc(r["tipo"]), _esc(r["num"]),
-                   _esc(r["matricula"] or "sin matrícula"),
-                   _esc(r["salida"]), _esc(r["devolucion"])))
+        # La misma linea que Telegram: grupo delante, matricula solo con
+        # contrato (ver avisos.grupo_txt y avisos.matricula_txt).
+        return avisos.cabecera(r, ruta_negrita=True)
 
     filas = []
     for c in cambios:
@@ -165,9 +166,12 @@ def cuerpo_cambios(cambios, activos, referencia):
                                                       _esc(r["fecha_llegada"]))]
             if r.get("contrato"):
                 extra.append("contrato %s" % _esc(r["contrato"]))
+        elif c["tipo"] == "ANULADO":
+            color, titulo = "#b00000", "ONEWAY ANULADO"
+            extra = ["%s · salía %s" % (_esc(r.get("estado")), _esc(r.get("fecha_salida")))]
         elif c["tipo"] == "DESAPARECIDO":
             color = "#b00000"
-            titulo = "ONEWAY ANULADO" if c.get("motivo") == "ANULADO" else "YA NO ES ONEWAY"
+            titulo = avisos.titulo_baja(c)
             extra = []
         else:
             color, titulo = "#b06a00", "CAMBIO"
