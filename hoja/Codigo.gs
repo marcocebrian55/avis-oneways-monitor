@@ -67,21 +67,32 @@ function actualizar() {
     const r = UrlFetchApp.fetch(URL_DATOS, { muteHttpExceptions: true, followRedirects: true });
     if (r.getResponseCode() !== 200) throw new Error('el servidor contesto HTTP ' + r.getResponseCode());
     const d = JSON.parse(r.getContentText());
-    if (props.getProperty('SELLO') === String(d.sello) && !props.getProperty('ERROR')) return;
+    // Cualquier valor de ERROR (tambien el '1' de la version anterior) obliga a
+    // repintar, que es lo que borra el aviso de la fila 1.
+    const avisoPuesto = !!props.getProperty('ERROR');
+    props.deleteProperty('FALLOS');
+    props.deleteProperty('ERROR');
+    if (props.getProperty('SELLO') === String(d.sello) && !avisoPuesto) return;
 
     pintarOneways_(hoja_(ss, HOJA_ONEWAYS), d);
     pintarTabla_(hoja_(ss, HOJA_COMPLETADOS), d.completados);
     pintarTabla_(hoja_(ss, HOJA_ALERTAS), d.alertas);
     props.setProperty('SELLO', String(d.sello));
     props.setProperty('ACTUALIZADO', d.actualizado);
-    props.deleteProperty('ERROR');
   } catch (err) {
-    // Los datos anteriores se quedan; solo se avisa arriba de que no son frescos.
-    props.setProperty('ERROR', '1');
+    // Un fallo suelto (p.ej. "DNS error" de Google, visto el 17/09/2026 a las
+    // 11:41) se arregla solo en la siguiente vuelta: no se avisa hasta que
+    // fallan 3 seguidas, unos 30 minutos. Los datos anteriores se quedan.
+    const fallos = Number(props.getProperty('FALLOS') || 0) + 1;
+    props.setProperty('FALLOS', String(fallos));
+    if (fallos < 3) return;
+    props.setProperty('ERROR', 'aviso');
     const ahora = Utilities.formatDate(new Date(), ss.getSpreadsheetTimeZone(), 'dd/MM HH:mm');
+    // NUNCA la URL en la celda: lleva el token y la hoja se comparte.
+    const motivo = String(err.message || err).split(URL_DATOS).join('servidor').slice(0, 60);
     hoja_(ss, HOJA_ONEWAYS).getRange(1, 1)
-      .setValue('⚠ Sin datos nuevos (' + ahora + '): ' + String(err.message || err).slice(0, 80) +
-                '  ·  datos de ' + (props.getProperty('ACTUALIZADO') || '—'))
+      .setValue('⚠ Sin conexión con el servidor desde hace ' + (fallos * CADA_MINUTOS) + ' min (' +
+                ahora + ': ' + motivo + ')  ·  datos de ' + (props.getProperty('ACTUALIZADO') || '—'))
       .setFontWeight('bold').setBackground('#F8CBCB');
   } finally {
     lock.releaseLock();
