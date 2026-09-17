@@ -26,7 +26,7 @@ except Exception:                  # pragma: no cover - depende del sistema
     tk = ttk = filedialog = messagebox = None
     HAY_TK = False
 
-VERSION = "2.4.0"
+VERSION = "2.5.0"
 # URL del manifiesto de actualizaciones. Hoy apunta a la carpeta de OneDrive
 # compartida; el dia que se publique en GitHub Releases solo cambia esta linea
 # (o el fichero 'actualizacion.txt' que se pone al lado del .exe).
@@ -1690,11 +1690,12 @@ def ejecutar_pasada(dias=7, ampliado=True, quien="tarea", avisar=True):
         elif cambios:
             registrar("SIN AVISOS: no se envia nada de lo siguiente.")
         # La hoja de Google va DESPUES de los avisos y nunca los retrasa ni los
-        # tumba: es una vista. Si no llega, la propia hoja lo delata con su
-        # "Actualizado: ..." de arriba, y lo pendiente se reenvia en la siguiente.
+        # tumba: es una vista. Aqui solo se deja el fichero; la hoja viene a
+        # buscarlo (ver hoja.py). Si deja de actualizarse, lo delata su propio
+        # "Actualizado: ..." de arriba.
         import hoja
-        hoja.sincronizar(ow, cambios, silenciosos, mapa_islas(), base,
-                         avisado=avisar, log=registrar)
+        hoja.publicar(ow, cambios, silenciosos, mapa_islas(), base,
+                      avisado=avisar, log=registrar)
         for c in cambios:
             r = c["reg"]
             base_txt = "%s %s (grupo %s, %s, %s→%s)" % (

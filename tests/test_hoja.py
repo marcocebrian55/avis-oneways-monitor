@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Pruebas de la hoja de Google: que fila sale, con que estado, color y orden,
-y que no se pierde ni se duplica nada cuando el envio falla."""
-import os, sys, datetime, tempfile, shutil, unittest
+y que el historial de 30 dias no pierde ni duplica nada."""
+import os, sys, json, datetime, tempfile, shutil, unittest
 
 RAIZ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(RAIZ, "src"))
@@ -69,11 +69,8 @@ class TablaTest(unittest.TestCase):
         self.assertIn("Completado (coche devuelto)", motivos)
         self.assertIn("Anulado", motivos)
         self.assertEqual(len(hoja.CAB_COMPLETADOS), len(filas[0]))
-
-    def test_sin_avisos_no_apunta_alertas(self):
-        cambios = [{"tipo": "NUEVO", "reg": reg(), "difs": [], "motivo": ""}]
-        self.assertEqual(hoja.construir({}, cambios, [], ISLAS, False, AHORA)["nuevas_alertas"], [])
-        self.assertEqual(len(hoja.construir({}, cambios, [], ISLAS, True, AHORA)["nuevas_alertas"]), 1)
+        self.assertEqual([hoja.CAB_COMPLETADOS[i] for i in (0, 10, 11)],
+                         ["Cerrado", "Fecha salida", "Fecha devolución"])
 
     def test_comparar_devuelve_los_cierres_silenciosos(self):
         sil = []
@@ -82,48 +79,59 @@ class TablaTest(unittest.TestCase):
         self.assertEqual([s["motivo"] for s in sil], ["TERMINADO"])
 
 
-class EnvioTest(unittest.TestCase):
+class PublicarTest(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp()
-        os.environ["HOJA_URL"], os.environ["HOJA_CLAVE"] = "https://x/exec", "secreto"
-        self.enviar_original = hoja.enviar
-        self.enviados = []
 
     def tearDown(self):
-        hoja.enviar = self.enviar_original
-        del os.environ["HOJA_URL"], os.environ["HOJA_CLAVE"]
         shutil.rmtree(self.dir, ignore_errors=True)
 
-    def _cambios(self, n):
-        return [{"tipo": "ANULADO", "reg": reg(num=str(n)), "difs": [], "motivo": ""}]
+    def datos(self):
+        with open(os.path.join(self.dir, hoja.CARPETA_PUBLICA, hoja.FICHERO_DATOS),
+                  encoding="utf-8") as f:
+            return json.load(f)
 
-    def test_sin_configurar_no_hace_nada(self):
-        del os.environ["HOJA_URL"]
-        os.environ["HOJA_URL"] = ""
-        self.assertIsNone(hoja.sincronizar({}, [], [], ISLAS, self.dir))
+    def test_escribe_el_fichero_publico_y_no_deja_temporales(self):
+        self.assertTrue(hoja.publicar({"RES-1": reg()}, [], [], ISLAS, self.dir, ahora=AHORA))
+        d = self.datos()
+        self.assertEqual(len(d["oneways"]["filas"]), 1)
+        self.assertEqual(d["actualizado"], "17/09/2026 12:00")
+        self.assertEqual(os.listdir(os.path.join(self.dir, hoja.CARPETA_PUBLICA)),
+                         [hoja.FICHERO_DATOS])
 
-    def test_si_falla_se_reenvia_en_la_siguiente(self):
-        def falla(url, cuerpo, timeout=90):
-            raise OSError("sin red")
-        hoja.enviar = falla
-        self.assertFalse(hoja.sincronizar({}, self._cambios(1), [], ISLAS, self.dir, ahora=AHORA))
+    def test_el_historial_se_acumula_sin_duplicar_y_caduca(self):
+        anulado = [{"tipo": "ANULADO", "reg": reg(num="1"), "difs": [], "motivo": ""}]
+        hoja.publicar({}, anulado, [], ISLAS, self.dir, ahora=AHORA)
+        dos_h = AHORA + datetime.timedelta(hours=2)
+        otro = [{"tipo": "ANULADO", "reg": reg(num="2"), "difs": [], "motivo": ""}]
+        hoja.publicar({}, otro, [], ISLAS, self.dir, ahora=dos_h)
+        d = self.datos()
+        self.assertEqual([f[2] for f in d["completados"]["filas"]], ["2", "1"])  # nuevo arriba
+        self.assertEqual(len(d["alertas"]["filas"]), 2)
 
-        def ok(url, cuerpo, timeout=90):
-            self.enviados.append(cuerpo)
-            return {"ok": True}
-        hoja.enviar = ok
-        self.assertTrue(hoja.sincronizar({}, self._cambios(2), [], ISLAS, self.dir,
-                                         ahora=AHORA + datetime.timedelta(hours=2)))
-        c = self.enviados[0]
-        self.assertEqual(c["clave"], "secreto")
-        self.assertEqual(len(c["completados"]["filas"]), 2)     # el que fallo + el nuevo
-        self.assertEqual(len(c["alertas"]["filas"]), 2)
-        self.assertFalse(os.path.exists(os.path.join(self.dir, hoja.COLA)))
+        # una pasada sin cambios no toca el historial
+        hoja.publicar({}, [], [], ISLAS, self.dir, ahora=dos_h + datetime.timedelta(hours=2))
+        self.assertEqual(len(self.datos()["completados"]["filas"]), 2)
 
-    def test_respuesta_con_error_cuenta_como_fallo(self):
-        hoja.enviar = lambda url, cuerpo, timeout=90: {"ok": False, "error": "clave incorrecta"}
-        self.assertFalse(hoja.sincronizar({}, self._cambios(1), [], ISLAS, self.dir, ahora=AHORA))
-        self.assertTrue(os.path.exists(os.path.join(self.dir, hoja.COLA)))
+        # a los 31 dias ya no estan
+        hoja.publicar({}, [], [], ISLAS, self.dir, ahora=AHORA + datetime.timedelta(days=31))
+        d = self.datos()
+        self.assertEqual((d["completados"]["filas"], d["alertas"]["filas"]), ([], []))
+
+    def test_sin_avisos_no_apunta_alertas_pero_si_completados(self):
+        anulado = [{"tipo": "ANULADO", "reg": reg(), "difs": [], "motivo": ""}]
+        hoja.publicar({}, anulado, [], ISLAS, self.dir, avisado=False, ahora=AHORA)
+        d = self.datos()
+        self.assertEqual((len(d["completados"]["filas"]), len(d["alertas"]["filas"])), (1, 0))
+
+    def test_un_fallo_no_lanza(self):
+        fichero = os.path.join(self.dir, "no_soy_carpeta")
+        open(fichero, "w").close()
+        self.assertFalse(hoja.publicar({}, [], [], ISLAS, fichero))
+
+    def test_acumular_no_repite_ids(self):
+        f = [46282.5, "Anulado", "x", "id1"]
+        self.assertEqual(len(hoja.acumular([f], [f], 46000)), 1)
 
 
 if __name__ == "__main__":

@@ -6,29 +6,39 @@ Peticion de las oficinas del 17/09/2026: ver los oneways futuros y en curso en
 una hoja, por colores segun su estado, y que los terminados salgan a otra
 pestaña. Tres pestañas:
 
-  Oneways      se REESCRIBE entera en cada pasada: es la foto de ahora.
-  Completados  se AÑADE: devueltos, anulados, sin recoger. Se guardan 30 dias.
-  Alertas      se AÑADE: cada aviso que se ha mandado a las oficinas. 30 dias.
+  Oneways      futuros y en curso, lo urgente arriba.
+  Completados  devueltos, anulados, sin recoger. Ultimos 30 dias.
+  Alertas      cada aviso que se ha mandado a las oficinas. Ultimos 30 dias.
 
-COMO LLEGA AL DRIVE DE EMPRESA. El servidor no tiene cuenta de Google. La hoja
-lleva dentro un Apps Script (`hoja/Codigo.gs` del repositorio) publicado como
-aplicacion web que se ejecuta COMO SU DUEÑO; el servidor le hace un POST con
-los datos y una clave compartida. Asi no hay proyecto de Google Cloud ni
-credenciales de Google en el servidor: solo la URL del script y la clave, que
-unicamente permiten escribir en esa hoja.
+LA HOJA VIENE A BUSCAR LOS DATOS, NO SE LOS MANDAMOS. La primera version hacia
+un POST a un Apps Script publicado como aplicacion web, pero el Google
+Workspace del grupo solo deja publicarlas para "cualquiera de domingoalonso" o
+"solo yo" (comprobado el 17/09/2026): desde el servidor, sin cuenta de Google,
+cualquier llamada acababa en la pantalla de inicio de sesion. Asi que se
+invierte:
 
-TODO SE DECIDE AQUI, NO EN EL SCRIPT. Estado, color, orden y formato de cada
-fila se calculan en Python, que tiene pruebas; el script solo pinta lo que le
-llega. Un error de logica en un .gs pegado a mano en un navegador no lo caza
-nadie.
+  1. Cada pasada escribe `publica/hoja_datos.json` (este modulo).
+  2. Tailscale Funnel sirve ESE fichero por HTTPS en una ruta con un token
+     largo (ver hoja/LEEME.md). Es lo unico del servidor abierto a internet.
+  3. El script de la hoja (hoja/Codigo.gs) tiene un disparador cada 10 min que
+     lo descarga con UrlFetchApp y repinta si ha cambiado.
+
+Completados y Alertas se guardan AQUI (`hoja_historial.json`), no en la hoja:
+cada fichero trae los 30 dias enteros y el script reescribe las pestañas sin
+llevar la cuenta de nada. Si una descarga falla, la siguiente trae todo.
+
+TODO SE DECIDE AQUI, NO EN EL SCRIPT. Estado, color, orden y formato se
+calculan en Python, que tiene pruebas; el script solo pinta.
 
 Solo biblioteca estandar. Un fallo aqui NUNCA tumba la pasada: la hoja es una
 vista, los avisos por correo y Telegram siguen siendo lo que manda.
 """
-import os, json, hashlib, datetime, urllib.request
+import os, json, hashlib, datetime
 
 DIAS_GUARDAR = 30
-COLA = "hoja_pendiente.json"          # completados/alertas que no llegaron
+CARPETA_PUBLICA = "publica"           # lo UNICO que sirve Funnel
+FICHERO_DATOS = "hoja_datos.json"
+HISTORIAL = "hoja_historial.json"     # completados y alertas de 30 dias
 
 # Estado -> (orden en la hoja, color de fondo). Colores suaves: la hoja se lee
 # de un vistazo y el texto tiene que seguir siendo legible.
@@ -63,30 +73,6 @@ CAB_COMPLETADOS = ["Cerrado", "Motivo", "Reserva", "Contrato", "Grupo",
                    "Isla devolución", "Fecha salida", "Fecha devolución",
                    "Matrícula", "Cliente", "id"]
 CAB_ALERTAS = ["Fecha", "Aviso", "Reserva", "Contrato", "Grupo", "Ruta", "Detalle", "id"]
-
-
-# ---------------- configuracion ----------------
-def cargar_config(base):
-    """{"url", "clave"} o None si la hoja no esta configurada.
-
-    Se lee de la seccion "hoja" de configuracion.json (en el servidor,
-    /var/lib/oneways/configuracion.json). El entorno manda, como en el resto.
-    """
-    url, clave = os.environ.get("HOJA_URL"), os.environ.get("HOJA_CLAVE")
-    if not (url and clave):
-        for d in (base, os.path.dirname(os.path.abspath(base))):
-            p = os.path.join(d, "configuracion.json")
-            if os.path.exists(p):
-                try:
-                    with open(p, encoding="utf-8-sig") as f:
-                        h = json.load(f).get("hoja") or {}
-                    url, clave = h.get("url"), h.get("clave")
-                except Exception:
-                    pass
-                break
-    if not (url and clave):
-        return None
-    return {"url": url.strip(), "clave": clave.strip()}
 
 
 # ---------------- fechas ----------------
@@ -203,99 +189,78 @@ def filas_alertas(cambios, ahora):
     return out
 
 
-def construir(ow, cambios, silenciosos, islas, avisado, ahora=None):
-    """El cuerpo del POST, sin la clave. `avisado`: si esta pasada mando los
-    avisos (con --sin-avisos no hubo alertas que apuntar)."""
+# ---------------- historial y publicacion ----------------
+def _leer_json(ruta, defecto):
+    try:
+        with open(ruta, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return defecto
+
+
+def _escribir_atomico(ruta, datos):
+    """Escribe a un temporal y lo renombra: Funnel puede estar sirviendo el
+    fichero justo en ese momento, y nunca debe ver uno a medio escribir."""
+    tmp = ruta + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(datos, f, ensure_ascii=False)
+    os.replace(tmp, ruta)
+
+
+def acumular(previas, nuevas, limite):
+    """Añade sin repetir id (ultima columna), quita lo anterior a `limite`
+    (primera columna) y deja lo mas reciente arriba."""
+    vistos, out = set(), []
+    for f in list(nuevas) + list(previas):
+        if f[-1] in vistos or not f[0] or f[0] < limite:
+            continue
+        vistos.add(f[-1])
+        out.append(f)
+    out.sort(key=lambda f: f[0], reverse=True)
+    return out
+
+
+def construir(ow, cambios, silenciosos, islas, avisado, historial, ahora=None):
+    """El contenido de hoja_datos.json. Actualiza `historial` en el sitio.
+
+    `avisado`: si esta pasada mando los avisos (con --sin-avisos no hubo
+    alertas que apuntar)."""
     ahora = ahora or datetime.datetime.now()
-    limite = ahora - datetime.timedelta(days=DIAS_GUARDAR)
+    limite = _serial(ahora - datetime.timedelta(days=DIAS_GUARDAR))
+    historial["completados"] = acumular(
+        historial.get("completados", []),
+        filas_completados(cambios, silenciosos, islas, ahora), limite)
+    historial["alertas"] = acumular(
+        historial.get("alertas", []),
+        filas_alertas(cambios, ahora) if avisado else [], limite)
     return {
+        # El script repinta solo si cambia el sello.
+        "sello": ahora.strftime("%Y%m%d%H%M%S"),
         "actualizado": ahora.strftime("%d/%m/%Y %H:%M"),
         "leyenda": [[k, v[1]] for k, v in ESTADOS.items()],
         "oneways": tabla_oneways(ow, islas, ahora),
-        "completados": {"cabecera": CAB_COMPLETADOS, "filas": [], "gris": GRIS,
-                        "fechas": [0, 10, 11]},
-        "alertas": {"cabecera": CAB_ALERTAS, "filas": [], "fechas": [0]},
-        "nuevos_completados": filas_completados(cambios, silenciosos, islas, ahora),
-        "nuevas_alertas": filas_alertas(cambios, ahora) if avisado else [],
-        "limite": _serial(limite),
+        "completados": {"cabecera": CAB_COMPLETADOS, "filas": historial["completados"],
+                        "gris": GRIS, "fechas": [0, 10, 11]},
+        "alertas": {"cabecera": CAB_ALERTAS, "filas": historial["alertas"],
+                    "fechas": [0]},
     }
 
 
-# ---------------- envio ----------------
-def _leer_cola(base):
-    try:
-        with open(os.path.join(base, COLA), encoding="utf-8") as f:
-            d = json.load(f)
-        return d.get("completados", []), d.get("alertas", [])
-    except Exception:
-        return [], []
-
-
-def _guardar_cola(base, completados, alertas):
-    p = os.path.join(base, COLA)
-    if not completados and not alertas:
-        if os.path.exists(p):
-            os.remove(p)
-        return
-    with open(p, "w", encoding="utf-8") as f:
-        json.dump({"completados": completados[-500:], "alertas": alertas[-500:]}, f,
-                  ensure_ascii=False)
-
-
-def enviar(url, cuerpo, timeout=90):
-    """POST al Apps Script. Devuelve el JSON de respuesta.
-
-    OJO: Google contesta al POST con un 302 hacia googleusercontent.com, y ahi
-    esta la respuesta de verdad. urllib sigue ese 302 convirtiendolo en GET,
-    que es exactamente lo que hay que hacer (el script ya se ejecuto en el
-    POST). Si algun dia se cambia de libreria, que siga el redirect igual.
-    """
-    datos = json.dumps(cuerpo, ensure_ascii=False).encode("utf-8")
-    req = urllib.request.Request(url, data=datos, method="POST",
-                                 headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        texto = r.read().decode("utf-8", "replace")
-    try:
-        return json.loads(texto)
-    except ValueError:
-        # Una pagina HTML en vez de JSON: casi siempre es la pantalla de
-        # "inicia sesion" de Google, o sea que la aplicacion web no esta
-        # publicada para "Cualquier usuario".
-        raise RuntimeError("la hoja no devolvio JSON (¿publicada para 'Cualquier "
-                           "usuario'?): %s" % " ".join(texto.split())[:120])
-
-
-def sincronizar(ow, cambios, silenciosos, islas, base, avisado=True, log=None, ahora=None):
-    """Pone la hoja al dia. Devuelve True/False, o None si no esta configurada.
-    NUNCA lanza.
-
-    Completados y alertas se AÑADEN, asi que si un envio falla se perderian.
-    Se guardan en una cola y se reenvian en la siguiente pasada; el script
-    descarta los que ya tenga por su id, asi que reenviar no duplica.
-    """
+def publicar(ow, cambios, silenciosos, islas, base, avisado=True, log=None, ahora=None):
+    """Escribe publica/hoja_datos.json. Devuelve True/False y NUNCA lanza."""
     log = log or (lambda m: None)
     try:
-        cfg = cargar_config(base)
-        if not cfg:
-            return None
-        cuerpo = construir(ow, cambios, silenciosos, islas, avisado, ahora)
-        cola_c, cola_a = _leer_cola(base)
-        cuerpo["completados"]["filas"] = cola_c + cuerpo.pop("nuevos_completados")
-        cuerpo["alertas"]["filas"] = cola_a + cuerpo.pop("nuevas_alertas")
-        cuerpo["clave"] = cfg["clave"]
-        try:
-            r = enviar(cfg["url"], cuerpo)
-            if not r.get("ok"):
-                raise RuntimeError(r.get("error") or "respuesta sin ok")
-        except Exception as e:
-            _guardar_cola(base, cuerpo["completados"]["filas"], cuerpo["alertas"]["filas"])
-            log("Hoja de Google NO actualizada: %s" % str(e)[:160])
-            return False
-        _guardar_cola(base, [], [])
-        log("Hoja de Google actualizada: %d oneway(s), +%s completado(s), +%s alerta(s)"
-            % (len(cuerpo["oneways"]["filas"]), r.get("completados", "?"),
-               r.get("alertas", "?")))
+        ruta_hist = os.path.join(base, HISTORIAL)
+        historial = _leer_json(ruta_hist, {})
+        datos = construir(ow, cambios, silenciosos, islas, avisado, historial, ahora)
+        carpeta = os.path.join(base, CARPETA_PUBLICA)
+        os.makedirs(carpeta, exist_ok=True)
+        _escribir_atomico(os.path.join(carpeta, FICHERO_DATOS), datos)
+        _escribir_atomico(ruta_hist, historial)
+        log("Datos de la hoja listos: %d oneway(s), %d completado(s), %d alerta(s)"
+            % (len(datos["oneways"]["filas"]), len(historial["completados"]),
+               len(historial["alertas"])))
         return True
     except Exception as e:
-        log("Fallo preparando la hoja de Google: %s" % str(e)[:160])
+        log("Fallo preparando los datos de la hoja: %s" % str(e)[:160])
         return False

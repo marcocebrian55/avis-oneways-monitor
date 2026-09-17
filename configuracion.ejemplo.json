@@ -25,8 +25,7 @@
   },
 
   "hoja": {
-    "url": "",
     "clave": "",
-    "_nota": "Hoja de Google con los oneways (ver hoja/LEEME.md). url = direccion /exec de la aplicacion web del Apps Script de la hoja. clave = la misma CLAVE que lleva dentro el script. Con url vacia no se sincroniza nada."
+    "_nota": "Hoja de Google con los oneways (ver hoja/LEEME.md). clave = token de la ruta que publica Tailscale Funnel (https://<servidor>/<clave>/oneways.json). El programa no la usa: esta aqui para que el token viva junto al resto de secretos."
   }
 }

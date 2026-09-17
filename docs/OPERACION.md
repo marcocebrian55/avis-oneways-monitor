@@ -165,11 +165,13 @@ empresa: pestaña **Oneways** (futuros y en curso, por colores), **Completados**
 (devueltos, anulados, sin recoger; 30 días) y **Alertas** (lo enviado; 30 días).
 Petición de las oficinas del 17/09/2026; la ve solo quien Marco comparta.
 
-El servidor no tiene cuenta de Google: la hoja lleva un Apps Script publicado
-como aplicación web y el servidor le hace un POST con una clave compartida.
-Configuración en la sección `hoja` de `configuracion.json`; montaje y
-problemas en `hoja/LEEME.md`. Un fallo de la hoja **nunca** para los avisos: se
-anota en el log (`Hoja de Google NO actualizada`) y lo pendiente se reenvía.
+La hoja **viene a buscar** los datos: cada pasada escribe
+`/var/lib/oneways/publica/hoja_datos.json`, Tailscale Funnel sirve ese único
+fichero por HTTPS en una ruta con token, y el Apps Script de la hoja lo descarga
+cada 10 minutos. **Es lo único del servidor abierto a internet.** El workspace
+del grupo no deja publicar aplicaciones web para fuera del dominio, por eso no
+se empuja. Montaje, token y cómo cerrarlo: `hoja/LEEME.md`. Un fallo de la hoja
+**nunca** para los avisos.
 
 **Rentway cambia un informe de formato → aviso de error.** En cada pasada se
 comprueba que están las columnas de las que vive el programa
