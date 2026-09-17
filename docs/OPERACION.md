@@ -158,6 +158,19 @@ aparece cuando ya hay contrato; si el coche entregado es de otro grupo, se dice
 (`coche de grupo SG`). Si aparece un grupo nuevo, el aviso sale con el código
 solo; para añadir la descripción: `herramientas/mapa_grupos.py`.
 
+### La hoja de Google (desde la v2.4.0)
+
+Además de los avisos, cada pasada pone al día una hoja de Google en el Drive de
+empresa: pestaña **Oneways** (futuros y en curso, por colores), **Completados**
+(devueltos, anulados, sin recoger; 30 días) y **Alertas** (lo enviado; 30 días).
+Petición de las oficinas del 17/09/2026; la ve solo quien Marco comparta.
+
+El servidor no tiene cuenta de Google: la hoja lleva un Apps Script publicado
+como aplicación web y el servidor le hace un POST con una clave compartida.
+Configuración en la sección `hoja` de `configuracion.json`; montaje y
+problemas en `hoja/LEEME.md`. Un fallo de la hoja **nunca** para los avisos: se
+anota en el log (`Hoja de Google NO actualizada`) y lo pendiente se reenvía.
+
 **Rentway cambia un informe de formato → aviso de error.** En cada pasada se
 comprueba que están las columnas de las que vive el programa
 (`COLUMNAS_ESPERADAS` en `avis_monitor.py`). Si falta alguna, llega un aviso a

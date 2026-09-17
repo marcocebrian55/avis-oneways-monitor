@@ -26,7 +26,7 @@ except Exception:                  # pragma: no cover - depende del sistema
     tk = ttk = filedialog = messagebox = None
     HAY_TK = False
 
-VERSION = "2.3.0"
+VERSION = "2.4.0"
 # URL del manifiesto de actualizaciones. Hoy apunta a la carpeta de OneDrive
 # compartida; el dia que se publique en GitHub Releases solo cambia esta linea
 # (o el fichero 'actualizacion.txt' que se pone al lado del .exe).
@@ -472,17 +472,23 @@ def _difs(antes, ahora):
     return difs
 
 
-def comparar(hoy, ayer, anulados=None, no_oneway=None, inicio=None, log=None):
+def comparar(hoy, ayer, anulados=None, no_oneway=None, inicio=None, log=None,
+             silenciosos=None):
     """Lista de cambios QUE HAY QUE AVISAR entre dos fotos.
 
     Lo que cambia pero no merece aviso se deja en el log (si se pasa `log`) y
     no se devuelve. Repasando las 321 fotos del 24/08 al 17/09/2026, 65 de los
     avisos enviados eran de ese tipo; estas reglas son las que los separan.
+
+    `silenciosos`, si se pasa una lista, recoge los CIERRES que no se avisan
+    ({"reg", "motivo"}: TERMINADO o SIN_RECOGER). No van al correo, pero la
+    hoja de Google los necesita para pasarlos a Completados.
     """
     anulados = anulados or {}
     no_oneway = no_oneway or set()
     inicio = inicio or inicio_ventana()
     log = log or (lambda m: None)
+    silenciosos = silenciosos if silenciosos is not None else []
     cambios = []
     for clave, reg in hoy.items():
         if clave not in ayer:
@@ -531,12 +537,14 @@ def comparar(hoy, ayer, anulados=None, no_oneway=None, inicio=None, log=None):
             # contrato: se ha cerrado, el coche esta devuelto. Si Abiertos no
             # hubiera bajado, arrastrar_contratos lo habria conservado.
             log("  (sin aviso) %s terminado: contrato %s cerrado" % (clave, reg.get("contrato")))
+            silenciosos.append({"reg": reg, "motivo": "TERMINADO"})
         elif _antes_de(reg.get("fecha_salida"), inicio):
             # Su fecha de salida ya paso y la reserva salio de la ventana del
             # informe. Es LA trampa de medianoche: la Reserva 900 se anuncio
             # como "YA NO ES ONEWAY" a 28 personas el 26/08/2026 a las 00:08.
             log("  (sin aviso) %s sale de la ventana de fechas (salida %s)"
                 % (clave, reg.get("fecha_salida")))
+            silenciosos.append({"reg": reg, "motivo": "SIN_RECOGER"})
         else:
             cambios.append({"tipo": "DESAPARECIDO", "reg": reg, "difs": [], "motivo": ""})
     return cambios
@@ -1666,7 +1674,9 @@ def ejecutar_pasada(dias=7, ampliado=True, quien="tarea", avisar=True):
         # OJO: 'if ayer' era un BUG. Un snapshot sin oneways es {} y en Python
         # eso es falso, asi que se saltaba la comparacion y el PRIMER oneway
         # tras un periodo sin ninguno no se avisaba nunca.
-        cambios = (comparar(ow, ayer, anulados, no_oneway, log=registrar)
+        silenciosos = []
+        cambios = (comparar(ow, ayer, anulados, no_oneway, log=registrar,
+                            silenciosos=silenciosos)
                    if ayer is not None else [])
         guardar_snapshot(ow)
 
@@ -1679,6 +1689,12 @@ def ejecutar_pasada(dias=7, ampliado=True, quien="tarea", avisar=True):
             parte_diario(activos, base)
         elif cambios:
             registrar("SIN AVISOS: no se envia nada de lo siguiente.")
+        # La hoja de Google va DESPUES de los avisos y nunca los retrasa ni los
+        # tumba: es una vista. Si no llega, la propia hoja lo delata con su
+        # "Actualizado: ..." de arriba, y lo pendiente se reenvia en la siguiente.
+        import hoja
+        hoja.sincronizar(ow, cambios, silenciosos, mapa_islas(), base,
+                         avisado=avisar, log=registrar)
         for c in cambios:
             r = c["reg"]
             base_txt = "%s %s (grupo %s, %s, %s→%s)" % (
