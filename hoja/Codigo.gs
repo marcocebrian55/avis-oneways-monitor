@@ -24,8 +24,22 @@ const FORMATO_FECHA = 'dd/mm/yyyy hh:mm';
 const CADA_MINUTOS = 10;
 
 /**
- * Se ejecuta UNA vez a mano desde el editor: pide permisos, crea las pestañas,
- * programa el disparador y hace la primera carga.
+ * PASO 1, a mano desde el editor: pide los permisos y comprueba hoja y
+ * servidor sin tocar nada. Si falla con "error desconocido" antes de escribir
+ * nada en el registro, casi siempre es el navegador con VARIAS cuentas de
+ * Google abiertas: repetir en una ventana de incognito solo con la de empresa.
+ */
+function paso1_probar() {
+  const ss = SpreadsheetApp.getActive();
+  console.log('1) Hoja OK: ' + ss.getName());
+  const r = UrlFetchApp.fetch(URL_DATOS, { muteHttpExceptions: true });
+  console.log('2) Servidor: HTTP ' + r.getResponseCode() + ', ' + r.getContentText().length + ' bytes');
+  console.log('3) Disparadores actuales: ' + ScriptApp.getProjectTriggers().length);
+}
+
+/**
+ * PASO 2, una vez a mano desde el editor: crea las pestañas, programa el
+ * disparador y hace la primera carga.
  */
 function instalar() {
   const ss = SpreadsheetApp.getActive();
