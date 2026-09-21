@@ -22,6 +22,9 @@ const HOJA_COMPLETADOS = 'Completados';
 const HOJA_ALERTAS = 'Alertas';
 const FORMATO_FECHA = 'dd/mm/yyyy hh:mm';
 const CADA_MINUTOS = 10;
+// Casilla que marcan a mano los responsables de flota. El servidor la manda
+// vacia; lo marcado se conserva aqui, por reserva (o contrato si no la hay).
+const COL_REVISADO = 'REVISADO';
 
 /**
  * PASO 1, a mano desde el editor: pide los permisos y comprueba hoja y
@@ -102,6 +105,8 @@ function actualizar() {
 /** Pestaña Oneways. Fila 1 = actualizado + leyenda, fila 2 = cabecera. */
 function pintarOneways_(sh, d) {
   const t = d.oneways, ancho = Math.max(sh.getMaxColumns(), t.cabecera.length);
+  // ANTES de reescribir: cada repintado cambia el orden de las filas.
+  const revisados = leerRevisados_(sh, 2);
   sh.getRange(1, 1, 1, ancho).clearContent().setBackground(null).setFontWeight('normal');
   sh.getRange(1, 1).setValue('Actualizado: ' + d.actualizado + '  ·  ' + t.filas.length + ' oneway(s)')
     .setFontWeight('bold');
@@ -109,6 +114,37 @@ function pintarOneways_(sh, d) {
     sh.getRange(1, 6 + i).setValue(l[0]).setBackground(l[1]).setHorizontalAlignment('center');
   });
   escribir_(sh, 2, t);
+  marcarRevisados_(sh, 2, t, revisados);
+}
+
+/** Oneway de cada fila: la reserva, o el contrato si es de mostrador. Se
+ *  compara como texto porque la hoja convierte '900' en el numero 900. */
+function clave_(reserva, contrato) {
+  return reserva !== '' && reserva != null ? 'R' + String(reserva).trim() : 'C' + String(contrato).trim();
+}
+
+/** {clave: true} de las filas con la casilla REVISADO marcada. Busca las
+ *  columnas por su nombre: si la cabecera cambia, no se cruzan datos. */
+function leerRevisados_(sh, filaCab) {
+  const out = {}, ultima = sh.getLastRow(), ancho = sh.getLastColumn();
+  if (ultima <= filaCab || !ancho) return out;
+  const v = sh.getRange(filaCab, 1, ultima - filaCab + 1, ancho).getValues();
+  const cR = v[0].indexOf('Reserva'), cC = v[0].indexOf('Contrato'), cX = v[0].indexOf(COL_REVISADO);
+  if (cR < 0 || cC < 0 || cX < 0) return out;
+  for (let i = 1; i < v.length; i++) {
+    if (v[i][cX] === true) out[clave_(v[i][cR], v[i][cC])] = true;
+  }
+  return out;
+}
+
+/** Pone las casillas y vuelve a marcar las que ya estaban. */
+function marcarRevisados_(sh, filaCab, t, revisados) {
+  const filas = t.filas || [], cX = t.cabecera.indexOf(COL_REVISADO);
+  if (cX < 0 || !filas.length) return;
+  const cR = t.cabecera.indexOf('Reserva'), cC = t.cabecera.indexOf('Contrato');
+  sh.getRange(filaCab + 1, cX + 1, filas.length, 1).insertCheckboxes()
+    .setValues(filas.map(function (f) { return [!!revisados[clave_(f[cR], f[cC])]]; }))
+    .setHorizontalAlignment('center');
 }
 
 /** Completados y Alertas: cabecera en la fila 1 y columna id oculta. */
@@ -122,14 +158,17 @@ function pintarTabla_(sh, t) {
 function escribir_(sh, filaCab, t) {
   const n = t.cabecera.length, primera = filaCab + 1;
   const ancho = Math.max(sh.getMaxColumns(), n);
+  // Si la tabla tiene menos columnas que antes, fuera las cabeceras que sobran.
+  if (ancho > n) sh.getRange(filaCab, n + 1, 1, ancho - n).clearContent().setBackground(null);
   sh.getRange(filaCab, 1, 1, n).setValues([t.cabecera])
     .setFontWeight('bold').setBackground('#3A3A40').setFontColor('#FFFFFF');
   sh.setFrozenRows(filaCab);
 
   const ultima = sh.getLastRow();
   if (ultima >= primera) {
-    sh.getRange(primera, 1, ultima - filaCab, ancho).clearContent().setBackground(null)
-      .setFontWeight('normal').setFontColor('#000000');
+    // Tambien las casillas: si hay menos filas, no deben quedar sueltas.
+    sh.getRange(primera, 1, ultima - filaCab, ancho).clearContent().clearDataValidations()
+      .setBackground(null).setFontWeight('normal').setFontColor('#000000');
   }
   const filas = t.filas || [];
   if (!filas.length) return;

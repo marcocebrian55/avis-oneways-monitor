@@ -64,10 +64,14 @@ TIPOS_AVISO = {
     "CAMBIO": "Cambio", "DESAPARECIDO": "Baja",
 }
 
+# REVISADO: casilla que marcan a mano los responsables de flota (21/09/2026).
+# Aqui solo se manda vacia; el script de la hoja conserva lo marcado de una
+# pasada a otra, por reserva (o contrato si no hay reserva). Cliente, telefono
+# y observaciones se quitaron de esta pestaña el mismo dia, a peticion suya.
+COL_REVISADO = "REVISADO"
 CAB_ONEWAYS = ["Estado", "Reserva", "Contrato", "Grupo", "Descripción grupo",
                "Salida", "Isla salida", "Devolución", "Isla devolución",
-               "Fecha salida", "Fecha devolución", "Matrícula", "Cliente",
-               "Teléfono", "Observaciones"]
+               "Fecha salida", "Fecha devolución", "Matrícula", COL_REVISADO]
 CAB_COMPLETADOS = ["Cerrado", "Motivo", "Reserva", "Contrato", "Grupo",
                    "Descripción grupo", "Salida", "Isla salida", "Devolución",
                    "Isla devolución", "Fecha salida", "Fecha devolución",
@@ -138,9 +142,8 @@ def tabla_oneways(ow, islas, ahora):
         if not reg.get("activo"):
             continue
         est = estado(reg, ahora)
-        fila = [est] + _comunes(reg, islas) + [
-            reg.get("telefono") or reg.get("telefono_conductor") or "",
-            (reg.get("observaciones") or "")[:200]]
+        # _comunes acaba en el cliente, que en esta pestaña ya no va
+        fila = [est] + _comunes(reg, islas)[:-1] + [False]
         filas.append((ESTADOS[est][0], _fecha(reg.get("fecha_salida")) or ahora, fila))
     # Lo urgente arriba (atrasados, devoluciones y salidas de hoy) y, dentro
     # de cada estado, por fecha de salida.

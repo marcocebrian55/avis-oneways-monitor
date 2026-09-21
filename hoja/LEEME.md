@@ -16,6 +16,14 @@ Pestañas:
 | azul | **Futuro** |
 | gris | completado (pestaña Completados) |
 
+**Columna REVISADO** (pestaña *Oneways*, a la derecha de Matrícula): casilla que
+marcan a mano los responsables de flota. El servidor la manda siempre vacía y
+es el script el que, antes de repintar, lee las casillas marcadas y las vuelve
+a poner en su oneway (por nº de reserva, o de contrato si no hay reserva),
+aunque la fila haya cambiado de sitio. Cuando el oneway pasa a *Completados*,
+su marca se pierde con él. Para marcar hace falta permiso de **edición** en la
+hoja.
+
 ## Cómo funciona
 
 ```

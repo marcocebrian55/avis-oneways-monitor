@@ -58,6 +58,12 @@ class TablaTest(unittest.TestCase):
         self.assertEqual(fila["Matrícula"], "")
         self.assertEqual((fila["Grupo"], fila["Isla salida"]), ("SC", "Tenerife"))
 
+    def test_revisado_a_la_derecha_de_la_matricula_y_sin_datos_del_cliente(self):
+        t = hoja.tabla_oneways({"RES-1": reg()}, ISLAS, AHORA)
+        self.assertEqual(t["cabecera"][-2:], ["Matrícula", "REVISADO"])
+        self.assertFalse({"Cliente", "Teléfono", "Observaciones"} & set(t["cabecera"]))
+        self.assertIs(t["filas"][0][-1], False)
+
     def test_completados_de_avisos_y_de_silenciosos(self):
         cambios = [{"tipo": "ANULADO", "reg": reg(num="1"), "difs": [], "motivo": ""},
                    {"tipo": "NUEVO", "reg": reg(num="2"), "difs": [], "motivo": ""},

@@ -91,9 +91,30 @@ def _norm(v):
     return str(v).strip() if v not in (None, "") else ""
 
 
-def _oficina_id(v):
-    s = _norm(v)
-    return s.split()[0] if s else ""
+def _oficina_id(v, solo_codigo=False):
+    """Codigo de la oficina TAL CUAL lo da Rentway, espacios incluidos.
+
+    Hay codigos con espacio: 'TFN BUD', 'FUE BUD', 'FUE TUR'. Quedarse con la
+    primera palabra, como se hacia hasta el 21/09/2026, convertia 'TFN BUD' en
+    'TFN', que es OTRA oficina (la de AVIS): un TFN BUD -> TFSBUD salia como
+    TFN -> TFSBUD, y un TFN BUD -> TFN no salia, porque parecia la misma.
+
+    `solo_codigo`: la celda trae solo el codigo (columna "ID de estacion" de
+    Reservas) y se toma entera. Si no, trae 'codigo nombre' ('TFN BUD Apt
+    Tenerife Norte BUDGET', en Abiertos) y el codigo es el trozo inicial mas
+    largo que exista en el catalogo de oficinas; si no hay ninguno, la primera
+    palabra, como antes.
+    """
+    palabras = _norm(v).split()
+    if not palabras:
+        return ""
+    if solo_codigo:
+        return " ".join(palabras)
+    mapa = mapa_islas()
+    for n in range(len(palabras), 1, -1):
+        if " ".join(palabras[:n]) in mapa:
+            return " ".join(palabras[:n])
+    return palabras[0]
 
 
 def _fecha(v):
@@ -123,8 +144,8 @@ def leer_oneways(reservas_path, abiertos_path, no_oneway=None):
     if reservas_path and os.path.exists(reservas_path):
         idx, data = _leer_hoja(reservas_path)
         for r in data:
-            sal_id = _oficina_id(_col(idx, r, "ID de estación de salida", "ID de estacion de salida"))
-            dev_id = _oficina_id(_col(idx, r, "ID de estación de devolucion", "ID de estación de devolución", "ID de estacion de devolucion"))
+            sal_id = _oficina_id(_col(idx, r, "ID de estación de salida", "ID de estacion de salida"), solo_codigo=True)
+            dev_id = _oficina_id(_col(idx, r, "ID de estación de devolucion", "ID de estación de devolución", "ID de estacion de devolucion"), solo_codigo=True)
             if not (sal_id and dev_id) or sal_id == dev_id:
                 continue
             num = _norm(_col(idx, r, "N.º Reserva", "Reserva"))
@@ -140,7 +161,7 @@ def leer_oneways(reservas_path, abiertos_path, no_oneway=None):
                 # cliente. Coinciden en 2.914 de 2.922 reservas (medido ese dia).
                 "grupo": _norm(_col(idx, r, "ID de grupo")),
                 "grupo_solicitado": _norm(_col(idx, r, "Grupo solicitado")),
-                "salida": sal_id, "devolucion": dev_id,
+                "salida": sal_id, "devolucion": dev_id, "codigo_entero": True,
                 "fecha_salida": _fecha(_col(idx, r, "Fecha de salida")),
                 "fecha_llegada": _fecha(_col(idx, r, "Fecha llegada", "Fecha de llegada")),
                 "cliente": _norm(_col(idx, r, "Nombre del cliente")),
@@ -187,7 +208,7 @@ def leer_oneways(reservas_path, abiertos_path, no_oneway=None):
                 # cobrados como Mini, Economic 1 o Economic 4. Por eso va en un
                 # campo aparte y no pisa "grupo".
                 "grupo_coche": _norm(_col(idx2, r, "Grupo")),
-                "salida": sal_id, "devolucion": dev_id,
+                "salida": sal_id, "devolucion": dev_id, "codigo_entero": True,
                 "fecha_salida": _fecha(_col(idx2, r, "Fecha de salida")),
                 "fecha_llegada": _fecha(_col(idx2, r, "Fecha de regreso", "Fecha de retorno")),
                 "cliente": _norm(_col(idx2, r, "Nombre del cliente")),
@@ -461,6 +482,14 @@ def _difs(antes, ahora):
             continue
         viejo, nuevo = antes.get(c), ahora.get(c)
         if str(viejo) == str(nuevo):
+            continue
+        if (c in ("salida", "devolucion") and not antes.get("codigo_entero")
+                and str(nuevo).split()[:1] == [str(viejo)]):
+            # La foto es de antes del 21/09/2026 y guardaba la oficina cortada
+            # ('TFN' por 'TFN BUD', ver _oficina_id). No ha cambiado nada: la
+            # oficina es la misma, solo que ahora se lee bien. Sin esta regla,
+            # el primer despliegue avisaria de todos los oneways de esas
+            # oficinas. Deja de aplicar en cuanto se guarda la primera foto nueva.
             continue
         if c == "matricula" and not ahora.get("contrato"):
             # Antes de la entrega la matricula es una PRE-asignacion y cambia

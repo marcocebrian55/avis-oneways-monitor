@@ -116,6 +116,18 @@ class LecturaTest(Base):
         self.assertIn("RES-900", ow)
         self.assertFalse(ow["RES-900"].get("contrato"))
 
+    def test_codigo_de_oficina_con_espacio_se_conserva_entero(self):
+        # 21/09/2026: 'TFN BUD' se quedaba en 'TFN', que es la oficina de AVIS.
+        ow = am.leer_oneways(self.reservas(reserva(900, "TFN BUD", "TFSBUD")),
+                             self.abiertos(contrato(591, None, "FUE TUR", "TFN BUD")))
+        self.assertEqual((ow["RES-900"]["salida"], ow["RES-900"]["devolucion"]), ("TFN BUD", "TFSBUD"))
+        self.assertEqual((ow["CON-591"]["salida"], ow["CON-591"]["devolucion"]), ("FUE TUR", "TFN BUD"))
+
+    def test_budget_y_avis_del_mismo_aeropuerto_son_oneway(self):
+        ow = am.leer_oneways(self.reservas(reserva(900, "TFN BUD", "TFN")),
+                             self.abiertos(contrato(591, None, "TFN", "TFN BUD")))
+        self.assertEqual(sorted(ow), ["CON-591", "RES-900"])
+
     def test_formato_cambiado_se_detecta(self):
         cab = [c if c != "Oficina de salida" else "ID de la oficina" for c in CAB_ABIERTOS]
         f = {"reservas": self.reservas(reserva(1, "A", "B")),
@@ -190,6 +202,16 @@ class AvisosTest(unittest.TestCase):
         viejo = reg()
         del viejo["grupo"]
         self.assertEqual(self.tipos({"RES-900": reg()}, {"RES-900": viejo}), [])
+
+    def test_foto_con_la_oficina_cortada_no_avisa_de_cambio(self):
+        ayer = {"RES-900": reg(salida="TFN", devolucion="TFSBUD")}
+        hoy = {"RES-900": reg(salida="TFN BUD", devolucion="TFSBUD", codigo_entero=True)}
+        self.assertEqual(self.tipos(hoy, ayer), [])
+
+    def test_cambio_de_oficina_con_la_foto_nueva_si_avisa(self):
+        ayer = {"RES-900": reg(salida="TFN", devolucion="TFSBUD", codigo_entero=True)}
+        hoy = {"RES-900": reg(salida="TFN BUD", devolucion="TFSBUD", codigo_entero=True)}
+        self.assertEqual(self.tipos(hoy, ayer), [("CAMBIO", "")])
 
 
 class ContinuidadTest(Base):
