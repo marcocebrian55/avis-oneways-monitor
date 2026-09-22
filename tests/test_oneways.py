@@ -244,6 +244,13 @@ class RepartoTest(unittest.TestCase):
     def test_sin_islas_el_prefijo_sigue_funcionando(self):
         self.assertEqual(self.quien("XACE", "TFN", self.XTRA, por_isla={})[0], ["admin@xtravans", "jefe@a"])
 
+    def test_administracion_y_cada_oficina_xtravans(self):
+        xtra = {"X": "admin@xtravans", "XACE": "ace@xtravans", "XTK6": "tk6@xtravans"}
+        self.assertEqual(self.quien("XACE", "XTK6", xtra)[0],
+                         ["ace@xtravans", "admin@xtravans", "jefe@a", "tk6@xtravans"])
+        self.assertEqual(self.quien("XACE", "XLP4", xtra)[0],
+                         ["ace@xtravans", "admin@xtravans", "jefe@a"])
+
     def test_isla_sin_lista_va_a_todos_incluido_xtravans(self):
         quien, huerfanas = self.quien("VDE", "TFN", self.XTRA)
         self.assertEqual(quien, ["admin@xtravans", "jefe@a", "lz@a", "tf@a"])

@@ -206,7 +206,7 @@ isla distinta.
 |---|---|
 | `correo.destinatarios` | el grupo que lo recibe **todo** (9 personas) |
 | `correo.por_isla` | Fuerteventura 4 · Lanzarote 4 · Gran Canaria 7 · Tenerife 7 · La Palma 2 |
-| `correo.por_prefijo` | `X` → administración de Xtravans (desde el 22/09/2026) |
+| `correo.por_prefijo` | `X` → administración de Xtravans · `XACE`, `XTK6`… → cada oficina (desde el 22/09/2026) |
 | Mapa oficina→isla | `src/oficinas_islas.json`, 1915 oficinas |
 
 Se agrupa **por persona, no por isla**. Quien cubre dos —`moalvarez@` lleva
@@ -220,8 +220,9 @@ más común, un oneway que va de una a otra.
 > un coche que no esperaba.
 
 **Xtravans va por prefijo, no por isla.** Las oficinas cuyo código empieza por
-`X` (`XTK6`, `XACE`, `XLP4`…) avisan a la lista `por_prefijo.X` y **no** a la
-de AVIS de su isla. Un oneway `XACE→XTK6` lo recibe Xtravans; uno mixto
+`X` (`XTK6`, `XACE`, `XLP4`…) avisan a **todas** las listas de `por_prefijo`
+cuya clave casa —`X` (administración) y la de la propia oficina, p.ej. `XACE`—
+y **no** a la de AVIS de su isla. Un oneway `XACE→XTK6` lo recibe Xtravans; uno mixto
 `XTK6→TFS` lo reciben Xtravans **y** Tenerife, porque cada oficina avisa a su
 equipo. Con la lista del prefijo vacía, esas oficinas vuelven a ir por isla.
 

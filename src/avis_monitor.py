@@ -1399,12 +1399,14 @@ def _lista(v):
 
 
 def _grupo_prefijo(cod, por_prefijo):
-    """Lista de la oficina si su codigo empieza por alguna clave de
-    `por_prefijo` (la mas larga gana). Lista vacia si no hay o esta vacia."""
-    for p in sorted(por_prefijo or {}, key=len, reverse=True):
+    """Gente de TODAS las claves de `por_prefijo` por las que empieza el
+    codigo, sumadas: con {"X": admin, "XACE": oficina} un oneway de XACE va a
+    administracion (todo Xtravans) Y a la oficina. Vacia si no casa ninguna."""
+    gente = []
+    for p, lista in (por_prefijo or {}).items():
         if p and cod.startswith(p):
-            return _lista(por_prefijo[p])
-    return []
+            gente += [g for g in _lista(lista) if g not in gente]
+    return gente
 
 
 def repartir(cambios, siempre, por_isla, mapa, por_prefijo=None):
@@ -1421,11 +1423,12 @@ def repartir(cambios, siempre, por_isla, mapa, por_prefijo=None):
     oficina nueva o una isla sin lista tiene que producir un correo de mas, no un
     silencio -- un silencio no se nota hasta que alguien pregunta por un coche.
 
-    `por_prefijo` ({"X": "a@x , b@y"}, pedido el 22/09/2026 para Xtravans):
-    cada OFICINA avisa a su equipo. Una oficina X... avisa a la lista "X" y no
-    a la de su isla; en un oneway mixto (XTK6 -> TFS) la otra oficina sigue
-    avisando a su isla, porque las dos tienen que enterarse. Si la lista del
-    prefijo esta vacia, la oficina vuelve a la regla de la isla.
+    `por_prefijo` ({"X": "a@x", "XACE": "b@y"}, pedido el 22/09/2026 para
+    Xtravans): cada OFICINA avisa a su equipo. Una oficina X... avisa a TODAS
+    las listas cuyo prefijo casa ("X" y "XACE") y no a la de su isla; en un
+    oneway mixto (XTK6 -> TFS) la otra oficina sigue avisando a su isla, porque
+    las dos tienen que enterarse. Si ninguna lista casa o estan vacias, la
+    oficina vuelve a la regla de la isla.
     """
     por_prefijo = por_prefijo or {}
     todas = set(siempre)
