@@ -1398,26 +1398,16 @@ def _lista(v):
     return [d.strip() for d in str(v or "").replace(";", ",").split(",") if d.strip()]
 
 
-def islas_de(reg, mapa):
-    """Islas que toca un oneway y si alguna oficina es desconocida.
-
-    Son SIEMPRE dos oficinas, la que suelta el coche y la que lo recibe, y las
-    dos tienen que enterarse. Pueden caer en la misma isla --un TFN->TFS es
-    Tenerife y Tenerife-- porque oneway significa oficina distinta, no isla
-    distinta.
-    """
-    islas, desconocida = set(), False
-    for campo in ("salida", "devolucion"):
-        cod = str(reg.get(campo) or "").strip()
-        isla = mapa.get(cod)
-        if isla:
-            islas.add(isla)
-        else:
-            desconocida = True
-    return islas, desconocida
+def _grupo_prefijo(cod, por_prefijo):
+    """Lista de la oficina si su codigo empieza por alguna clave de
+    `por_prefijo` (la mas larga gana). Lista vacia si no hay o esta vacia."""
+    for p in sorted(por_prefijo or {}, key=len, reverse=True):
+        if p and cod.startswith(p):
+            return _lista(por_prefijo[p])
+    return []
 
 
-def repartir(cambios, siempre, por_isla, mapa):
+def repartir(cambios, siempre, por_isla, mapa, por_prefijo=None):
     """Agrupa los avisos por DESTINATARIO, no por isla.
 
     Si se mandara un correo por isla, quien cubre dos --moalvarez@ esta en
@@ -1430,25 +1420,40 @@ def repartir(cambios, siempre, por_isla, mapa):
     REGLA DE ORO: lo que no se sabe se manda a TODO EL MUNDO, nunca a nadie. Una
     oficina nueva o una isla sin lista tiene que producir un correo de mas, no un
     silencio -- un silencio no se nota hasta que alguien pregunta por un coche.
+
+    `por_prefijo` ({"X": "a@x , b@y"}, pedido el 22/09/2026 para Xtravans):
+    cada OFICINA avisa a su equipo. Una oficina X... avisa a la lista "X" y no
+    a la de su isla; en un oneway mixto (XTK6 -> TFS) la otra oficina sigue
+    avisando a su isla, porque las dos tienen que enterarse. Si la lista del
+    prefijo esta vacia, la oficina vuelve a la regla de la isla.
     """
+    por_prefijo = por_prefijo or {}
     todas = set(siempre)
-    for v in por_isla.values():
+    for v in list(por_isla.values()) + list(por_prefijo.values()):
         todas |= set(_lista(v))
 
     para_quien, huerfanas = {}, set()
     for i, c in enumerate(cambios):
-        islas, desconocida = islas_de(c["reg"], mapa)
         destino = set(siempre)
-        if desconocida:
-            destino |= todas
-            for campo in ("salida", "devolucion"):
-                cod = str(c["reg"].get(campo) or "").strip()
-                if cod and cod not in mapa:
-                    huerfanas.add(cod)
-        for isla in islas:
-            gente = _lista(por_isla.get(isla))
+        # Son SIEMPRE dos oficinas, la que suelta el coche y la que lo recibe,
+        # y las dos tienen que enterarse. Pueden caer en la misma isla --un
+        # TFN->TFS es Tenerife y Tenerife-- porque oneway significa oficina
+        # distinta, no isla distinta.
+        for campo in ("salida", "devolucion"):
+            cod = str(c["reg"].get(campo) or "").strip()
+            gente = _grupo_prefijo(cod, por_prefijo)
             if gente:
                 destino |= set(gente)
+                continue
+            if not por_isla:
+                continue                  # sin islas: lo demas va a `siempre`
+            isla = mapa.get(cod)
+            if not isla:
+                destino |= todas
+                if cod:
+                    huerfanas.add(cod)
+            elif _lista(por_isla.get(isla)):
+                destino |= set(_lista(por_isla.get(isla)))
             else:
                 # isla conocida pero sin nadie asignado (El Hierro, La Gomera)
                 destino |= todas
@@ -1509,8 +1514,9 @@ def avisar_correo(cambios, activos, referencia, base=None):
 
         siempre = _lista(cfg.get("destinatarios"))
         por_isla = cfg.get("por_isla") or {}
-        if por_isla:
-            lotes, huerfanas = repartir(cambios, siempre, por_isla, mapa_islas())
+        por_prefijo = cfg.get("por_prefijo") or {}
+        if por_isla or por_prefijo:
+            lotes, huerfanas = repartir(cambios, siempre, por_isla, mapa_islas(), por_prefijo)
         else:
             # Sin reparto configurado se comporta como toda la vida. Es el
             # camino por defecto a proposito: quien no haya configurado islas no

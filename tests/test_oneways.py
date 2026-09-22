@@ -214,6 +214,42 @@ class AvisosTest(unittest.TestCase):
         self.assertEqual(self.tipos(hoy, ayer), [("CAMBIO", "")])
 
 
+class RepartoTest(unittest.TestCase):
+    MAPA = {"TFN": "Tenerife", "TFS": "Tenerife", "ACE": "Lanzarote",
+            "XTK6": "Tenerife", "XACE": "Lanzarote", "VDE": "El Hierro"}
+    ISLAS = {"Tenerife": "tf@a", "Lanzarote": "lz@a"}
+    XTRA = {"X": "admin@xtravans"}
+
+    def quien(self, sal, dev, por_prefijo=None, por_isla=None):
+        c = {"tipo": "NUEVO", "reg": reg(salida=sal, devolucion=dev)}
+        lotes, huerfanas = am.repartir([c], ["jefe@a"], self.ISLAS if por_isla is None else por_isla,
+                                       self.MAPA, por_prefijo)
+        return sorted(g for gente, _ in lotes for g in gente), huerfanas
+
+    def test_por_islas_como_siempre(self):
+        self.assertEqual(self.quien("TFN", "ACE")[0], ["jefe@a", "lz@a", "tf@a"])
+
+    def test_xtravans_solo_a_su_equipo(self):
+        self.assertEqual(self.quien("XACE", "XTK6", self.XTRA)[0], ["admin@xtravans", "jefe@a"])
+
+    def test_xtravans_no_recibe_los_de_avis(self):
+        self.assertEqual(self.quien("TFN", "TFS", self.XTRA)[0], ["jefe@a", "tf@a"])
+
+    def test_mixto_avisa_a_las_dos_oficinas(self):
+        self.assertEqual(self.quien("XTK6", "TFS", self.XTRA)[0], ["admin@xtravans", "jefe@a", "tf@a"])
+
+    def test_prefijo_sin_lista_vuelve_a_la_isla(self):
+        self.assertEqual(self.quien("XACE", "XTK6", {"X": ""})[0], ["jefe@a", "lz@a", "tf@a"])
+
+    def test_sin_islas_el_prefijo_sigue_funcionando(self):
+        self.assertEqual(self.quien("XACE", "TFN", self.XTRA, por_isla={})[0], ["admin@xtravans", "jefe@a"])
+
+    def test_isla_sin_lista_va_a_todos_incluido_xtravans(self):
+        quien, huerfanas = self.quien("VDE", "TFN", self.XTRA)
+        self.assertEqual(quien, ["admin@xtravans", "jefe@a", "lz@a", "tf@a"])
+        self.assertEqual(huerfanas, ["El Hierro"])
+
+
 class ContinuidadTest(Base):
     def test_un_oneway_recogido_sobrevive_a_la_medianoche(self):
         """Dia 1: reserva + contrato. Dia 2: la reserva ya no esta en la ventana
