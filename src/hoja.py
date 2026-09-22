@@ -77,6 +77,12 @@ CAB_COMPLETADOS = ["Cerrado", "Motivo", "Reserva", "Contrato", "Grupo",
                    "Isla devolución", "Fecha salida", "Fecha devolución",
                    "Matrícula", "Cliente", "id"]
 CAB_ALERTAS = ["Fecha", "Aviso", "Reserva", "Contrato", "Grupo", "Ruta", "Detalle", "id"]
+RUTA = " → "
+
+# Pestañas propias por marca (22/09/2026, Xtravans): las mismas tres, solo con
+# los oneways en los que sale o llega una oficina cuyo codigo empieza por el
+# prefijo. Las pestañas generales siguen teniendo TODO.
+MARCAS = {"Xtravans": "X"}
 
 
 # ---------------- fechas ----------------
@@ -186,7 +192,7 @@ def filas_alertas(cambios, ahora):
         r = c["reg"]
         out.append([_serial(ahora), TIPOS_AVISO.get(c["tipo"], c["tipo"]),
                     _num_reserva(r), _num_contrato(r), r.get("grupo") or "",
-                    "%s → %s" % (r.get("salida"), r.get("devolucion")),
+                    "%s%s%s" % (r.get("salida"), RUTA, r.get("devolucion")),
                     _detalle_aviso(c),
                     _id("A", c["tipo"], r.get("tipo"), r.get("num"), sello)])
     return out
@@ -223,6 +229,24 @@ def acumular(previas, nuevas, limite):
     return out
 
 
+def _oficinas_fila(cabecera, fila):
+    """Codigos de oficina de una fila de cualquiera de las tres tablas."""
+    if "Ruta" in cabecera:
+        return str(fila[cabecera.index("Ruta")]).split(RUTA)
+    return [fila[cabecera.index("Salida")], fila[cabecera.index("Devolución")]]
+
+
+def de_marca(tabla, prefijo):
+    """La misma tabla con solo las filas que tocan una oficina `prefijo`..."""
+    cab = tabla["cabecera"]
+    quedan = [i for i, f in enumerate(tabla["filas"])
+              if any(str(o or "").strip().startswith(prefijo) for o in _oficinas_fila(cab, f))]
+    out = dict(tabla, filas=[tabla["filas"][i] for i in quedan])
+    if "colores" in tabla:
+        out["colores"] = [tabla["colores"][i] for i in quedan]
+    return out
+
+
 def construir(ow, cambios, silenciosos, islas, avisado, historial, ahora=None):
     """El contenido de hoja_datos.json. Actualiza `historial` en el sitio.
 
@@ -236,7 +260,7 @@ def construir(ow, cambios, silenciosos, islas, avisado, historial, ahora=None):
     historial["alertas"] = acumular(
         historial.get("alertas", []),
         filas_alertas(cambios, ahora) if avisado else [], limite)
-    return {
+    datos = {
         # El script repinta solo si cambia el sello.
         "sello": ahora.strftime("%Y%m%d%H%M%S"),
         "actualizado": ahora.strftime("%d/%m/%Y %H:%M"),
@@ -247,6 +271,10 @@ def construir(ow, cambios, silenciosos, islas, avisado, historial, ahora=None):
         "alertas": {"cabecera": CAB_ALERTAS, "filas": historial["alertas"],
                     "fechas": [0]},
     }
+    datos["marcas"] = [dict({t: de_marca(datos[t], prefijo)
+                             for t in ("oneways", "completados", "alertas")}, nombre=nombre)
+                       for nombre, prefijo in MARCAS.items()]
+    return datos
 
 
 def publicar(ow, cambios, silenciosos, islas, base, avisado=True, log=None, ahora=None):

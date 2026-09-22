@@ -6,6 +6,9 @@ Pestañas:
 - **Oneways**: futuros y en curso, por colores, lo urgente arriba.
 - **Completados**: devueltos, anulados y sin recoger. Últimos 30 días.
 - **Alertas**: cada aviso enviado a las oficinas. Últimos 30 días.
+- **Oneways / Completados / Alertas Xtravans**: las mismas tres, solo con los
+  oneways que salen o llegan a una oficina `X…`. Las generales siguen con todo.
+  Las marcas las decide `MARCAS` en `src/hoja.py`; el script crea las pestañas solo.
 
 | Color | Estado |
 |---|---|

@@ -64,6 +64,24 @@ class TablaTest(unittest.TestCase):
         self.assertFalse({"Cliente", "Teléfono", "Observaciones"} & set(t["cabecera"]))
         self.assertIs(t["filas"][0][-1], False)
 
+    def test_pestanas_de_xtravans_solo_con_sus_oneways(self):
+        ow = {"RES-1": reg(num="1"),
+              "RES-2": reg(num="2", salida="XACE", devolucion="XTK6"),
+              "RES-3": reg(num="3", salida="TFS", devolucion="XTK6", contrato="7")}
+        cambios = [{"tipo": "NUEVO", "reg": ow["RES-2"], "difs": [], "motivo": ""},
+                   {"tipo": "NUEVO", "reg": ow["RES-1"], "difs": [], "motivo": ""},
+                   {"tipo": "ANULADO", "reg": reg(num="4", salida="XLP4", devolucion="LPA"),
+                    "difs": [], "motivo": ""}]
+        d = hoja.construir(ow, cambios, [], ISLAS, True, {}, AHORA)
+        x = {m["nombre"]: m for m in d["marcas"]}["Xtravans"]
+        self.assertEqual(sorted(f[1] for f in x["oneways"]["filas"]), ["2", "3"])
+        self.assertEqual(len(x["oneways"]["colores"]), 2)
+        self.assertEqual([f[2] for f in x["completados"]["filas"]], ["4"])
+        self.assertEqual(sorted(f[2] for f in x["alertas"]["filas"]), ["2", "4"])
+        # las generales siguen con todo
+        self.assertEqual(len(d["oneways"]["filas"]), 3)
+        self.assertEqual(x["oneways"]["cabecera"], d["oneways"]["cabecera"])
+
     def test_completados_de_avisos_y_de_silenciosos(self):
         cambios = [{"tipo": "ANULADO", "reg": reg(num="1"), "difs": [], "motivo": ""},
                    {"tipo": "NUEVO", "reg": reg(num="2"), "difs": [], "motivo": ""},

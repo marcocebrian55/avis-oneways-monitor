@@ -77,9 +77,16 @@ function actualizar() {
     props.deleteProperty('ERROR');
     if (props.getProperty('SELLO') === String(d.sello) && !avisoPuesto) return;
 
-    pintarOneways_(hoja_(ss, HOJA_ONEWAYS), d);
+    pintarOneways_(hoja_(ss, HOJA_ONEWAYS), d, d.oneways);
     pintarTabla_(hoja_(ss, HOJA_COMPLETADOS), d.completados);
     pintarTabla_(hoja_(ss, HOJA_ALERTAS), d.alertas);
+    // Las mismas tres por marca ('Oneways Xtravans'...). Las crea solas la
+    // primera vez; el servidor decide que marcas hay (src/hoja.py, MARCAS).
+    (d.marcas || []).forEach(function (m) {
+      pintarOneways_(hoja_(ss, HOJA_ONEWAYS + ' ' + m.nombre), d, m.oneways);
+      pintarTabla_(hoja_(ss, HOJA_COMPLETADOS + ' ' + m.nombre), m.completados);
+      pintarTabla_(hoja_(ss, HOJA_ALERTAS + ' ' + m.nombre), m.alertas);
+    });
     props.setProperty('SELLO', String(d.sello));
     props.setProperty('ACTUALIZADO', d.actualizado);
   } catch (err) {
@@ -102,9 +109,10 @@ function actualizar() {
   }
 }
 
-/** Pestaña Oneways. Fila 1 = actualizado + leyenda, fila 2 = cabecera. */
-function pintarOneways_(sh, d) {
-  const t = d.oneways, ancho = Math.max(sh.getMaxColumns(), t.cabecera.length);
+/** Pestaña Oneways (o la de una marca, con su tabla `t`). Fila 1 =
+ *  actualizado + leyenda, fila 2 = cabecera. */
+function pintarOneways_(sh, d, t) {
+  const ancho = Math.max(sh.getMaxColumns(), t.cabecera.length);
   // ANTES de reescribir: cada repintado cambia el orden de las filas.
   const revisados = leerRevisados_(sh, 2);
   sh.getRange(1, 1, 1, ancho).clearContent().setBackground(null).setFontWeight('normal');
